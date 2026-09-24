@@ -35,7 +35,9 @@ import {
   IconNetwork,
   IconCheck,
   IconSearch,
+  IconDownload,
 } from "@tabler/icons-react";
+import { PrintAgentModal } from "@/components/printing/PrintAgentModal";
 import { useAuth } from "@/features/auth/context/AuthContext";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Loading } from "@/components/common/Loading";
@@ -186,6 +188,7 @@ export default function OrdersPage() {
   const [discoveredPrinters, setDiscoveredPrinters] = useState<DiscoveredPrinter[]>([]);
   const [lanTestResult, setLanTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [agentActive, setAgentActive] = useState<boolean | null>(null);
+  const [agentModalOpened, { open: openAgentModal, close: closeAgentModal }] = useDisclosure(false);
 
   useEffect(() => {
     checkPrintAgentActive().then(setAgentActive);
@@ -614,6 +617,20 @@ export default function OrdersPage() {
                 </Badge>
               </Tooltip>
 
+              {/* Local Print Agent Status & Download Badge */}
+              <Tooltip label={agentActive ? "Kitchen Print Agent connected (Silent background thermal printing enabled). Click to view details." : "Install Kitchen Print Agent for silent background thermal printing and network auto-discovery"}>
+                <Badge
+                  color={agentActive ? "teal" : "blue"}
+                  variant={agentActive ? "outline" : "filled"}
+                  size="lg"
+                  style={{ cursor: "pointer" }}
+                  leftSection={agentActive ? <IconPrinter size={14} /> : <IconDownload size={14} />}
+                  onClick={openAgentModal}
+                >
+                  {agentActive ? "Agent: Active" : "Install Print Agent"}
+                </Badge>
+              </Tooltip>
+
               {isUsbPrintSupported() && (
                 usbPrinter ? (
                   <Tooltip label="USB Printer Connected. Silent printing active (no print dialog!). Click to disconnect.">
@@ -975,13 +992,26 @@ export default function OrdersPage() {
               <Text size="sm" c="dimmed">
                 Configure your 80mm thermal receipt printer over your local network.
               </Text>
-              <Badge
-                size="sm"
-                variant="light"
-                color={agentActive ? "teal" : "blue"}
-              >
-                {agentActive ? "Print Agent: Active (Local PC)" : "Print Gateway: Web Mode"}
-              </Badge>
+              <Group gap="xs">
+                <Badge
+                  size="sm"
+                  variant="light"
+                  color={agentActive ? "teal" : "blue"}
+                  style={{ cursor: "pointer" }}
+                  onClick={openAgentModal}
+                >
+                  {agentActive ? "Print Agent: Active (Local PC) ⚙️" : "Print Gateway: Web Mode"}
+                </Badge>
+                <Button
+                  size="xs"
+                  variant={agentActive ? "subtle" : "light"}
+                  color="blue"
+                  leftSection={<IconDownload size={14} />}
+                  onClick={openAgentModal}
+                >
+                  {agentActive ? "Agent Packages" : "Download Print Agent"}
+                </Button>
+              </Group>
             </Group>
 
             {/* Auto-Detection Card */}
@@ -1131,6 +1161,14 @@ export default function OrdersPage() {
             </Group>
           </Stack>
         </Modal>
+
+        {/* Print Agent Download and Configuration Modal */}
+        <PrintAgentModal
+          opened={agentModalOpened}
+          onClose={closeAgentModal}
+          agentActive={agentActive}
+          onStatusChange={(active) => setAgentActive(active)}
+        />
       </Box>
     );
 }

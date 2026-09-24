@@ -15,6 +15,7 @@ import {
   Paper,
   Flex,
 } from "@mantine/core";
+import { useDisclosure } from "@mantine/hooks";
 import {
   IconBuildingStore,
   IconUserCircle,
@@ -28,6 +29,8 @@ import {
 import { QRCodeCanvas } from "qrcode.react";
 import { useAuth } from "@/features/auth/context/AuthContext";
 import { PageHeader } from "@/components/common/PageHeader";
+import { checkPrintAgentActive } from "@/utils/lanPrinter";
+import { PrintAgentModal } from "@/components/printing/PrintAgentModal";
 
 export default function SettingsPage() {
   const { restaurant, user } = useAuth();
@@ -35,6 +38,13 @@ export default function SettingsPage() {
 
   const [networkIp, setNetworkIp] = React.useState<string>("192.168.1.91:3000");
   const [useNetworkIp, setUseNetworkIp] = React.useState<boolean>(true);
+
+  const [agentActive, setAgentActive] = React.useState<boolean | null>(null);
+  const [agentModalOpened, { open: openAgentModal, close: closeAgentModal }] = useDisclosure(false);
+
+  React.useEffect(() => {
+    checkPrintAgentActive().then(setAgentActive);
+  }, []);
 
   // Resolve QR URL from user profile, restaurant or fallback
   const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -525,6 +535,76 @@ export default function SettingsPage() {
             </Stack>
           </Card>
         </SimpleGrid>
+
+        {/* Receipt Printer & Kitchen Print Agent Card */}
+        <Card
+          padding="xl"
+          radius="md"
+          style={{
+            backgroundColor: "var(--color-surface)",
+            borderColor: "var(--color-border)",
+          }}
+        >
+          <Flex
+            direction={{ base: "column", sm: "row" }}
+            justify="space-between"
+            align={{ base: "flex-start", sm: "center" }}
+            gap="md"
+          >
+            <Group align="flex-start" gap="md">
+              <Box
+                style={{
+                  width: 48,
+                  height: 48,
+                  borderRadius: "10px",
+                  backgroundColor: "var(--mantine-color-teal-0)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: "var(--mantine-color-teal-7)",
+                }}
+              >
+                <IconPrinter size={26} />
+              </Box>
+              <Box>
+                <Group gap="xs">
+                  <Title order={4} style={{ color: "var(--color-text)" }}>
+                    Thermal Receipt Printing & Desktop Agent
+                  </Title>
+                  <Badge
+                    color={agentActive ? "teal" : "gray"}
+                    variant={agentActive ? "filled" : "outline"}
+                    size="sm"
+                  >
+                    {agentActive ? "Agent Connected" : "Agent Inactive"}
+                  </Badge>
+                </Group>
+                <Text size="xs" style={{ color: "var(--color-text-muted)" }} mt={4}>
+                  Install the Kitchen Print Agent on your restaurant Windows/Mac/Linux PC for silent 80mm thermal receipt printing and local network printer auto-discovery.
+                </Text>
+              </Box>
+            </Group>
+
+            <Group gap="sm" wrap="wrap">
+              <Button
+                color="teal"
+                variant="filled"
+                leftSection={<IconDownload size={18} />}
+                onClick={openAgentModal}
+              >
+                Download Print Agent
+              </Button>
+            </Group>
+          </Flex>
+        </Card>
+
+        {/* Print Agent Download & Help Modal */}
+        <PrintAgentModal
+          opened={agentModalOpened}
+          onClose={closeAgentModal}
+          agentActive={agentActive}
+          onStatusChange={(active) => setAgentActive(active)}
+        />
       </Stack>
     </Box>
   );
