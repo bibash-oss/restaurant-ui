@@ -23,6 +23,8 @@ import {
   Alert,
   SimpleGrid,
   Image,
+  SegmentedControl,
+  Center,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
@@ -34,6 +36,7 @@ import {
   IconPaperclip,
   IconRefresh,
   IconAlertCircle,
+  IconGlassFull,
 } from "@tabler/icons-react";
 import { useAuth } from "@/features/auth/context/AuthContext";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -61,6 +64,7 @@ interface ItemFormData {
   description: string;
   price: number;
   imageUrl: string;
+  menuType: "BAR" | "KITCHEN";
   isActive: boolean;
 }
 
@@ -77,6 +81,7 @@ export default function MenuPage() {
   const [addons, setAddons] = useState<Addon[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [menuTypeFilter, setMenuTypeFilter] = useState<string>("ALL");
 
   // Category Modal State
   const [categoryModalOpened, { open: openCategoryModal, close: closeCategoryModal }] =
@@ -109,6 +114,7 @@ export default function MenuPage() {
       description: "",
       price: 0,
       imageUrl: "",
+      menuType: "KITCHEN",
       isActive: true,
     },
   });
@@ -202,6 +208,7 @@ export default function MenuPage() {
       description: "",
       price: 0,
       imageUrl: "",
+      menuType: "KITCHEN",
       isActive: true,
     });
     openItemModal();
@@ -215,6 +222,7 @@ export default function MenuPage() {
       description: item.description || "",
       price: Number(item.price) || 0,
       imageUrl: item.imageUrl || "",
+      menuType: item.menuType === "BAR" ? "BAR" : "KITCHEN",
       isActive: item.isActive !== false,
     });
     openItemModal();
@@ -229,6 +237,7 @@ export default function MenuPage() {
           description: data.description,
           price: Number(data.price),
           imageUrl: data.imageUrl,
+          menuType: data.menuType,
           isActive: data.isActive,
         };
         await APIUpdateMenuItem(editingItem.id, updatePayload);
@@ -240,6 +249,7 @@ export default function MenuPage() {
           description: data.description,
           price: Number(data.price),
           imageUrl: data.imageUrl,
+          menuType: data.menuType,
         };
         await APICreateMenuItem(createPayload);
       }
@@ -290,6 +300,15 @@ export default function MenuPage() {
     }
   };
 
+  const filteredItems = items.filter((item) => {
+    if (menuTypeFilter === "ALL") return true;
+    if (menuTypeFilter === "BAR") return item.menuType === "BAR";
+    return item.menuType !== "BAR";
+  });
+
+  const kitchenCount = items.filter((i) => i.menuType !== "BAR").length;
+  const barCount = items.filter((i) => i.menuType === "BAR").length;
+
   if (isLoading) {
     return <Loading message="Loading menu catalog..." />;
   }
@@ -298,7 +317,7 @@ export default function MenuPage() {
     <Box>
       <PageHeader
         title="Menu & Catalog"
-        description="Organize categories, dishes, prices, and optional add-ons"
+        description="Organize categories, dishes, prices, bar drinks, and optional add-ons"
         action={
           <Group>
             <Button
@@ -317,7 +336,7 @@ export default function MenuPage() {
                 onClick={handleOpenAddItem}
                 style={{ backgroundColor: "var(--color-primary)" }}
               >
-                Add Dish
+                Add Menu Item
               </Button>
             ) : (
               <Button
@@ -365,27 +384,56 @@ export default function MenuPage() {
               borderColor: "var(--color-border)",
             }}
           >
+            {/* Department Filter Bar */}
+            <Group justify="space-between" mb="md" wrap="wrap" gap="sm">
+              <SegmentedControl
+                size="xs"
+                value={menuTypeFilter}
+                onChange={setMenuTypeFilter}
+                data={[
+                  { label: `All Items (${items.length})`, value: "ALL" },
+                  {
+                    label: `🍳 Kitchen (${kitchenCount})`,
+                    value: "KITCHEN",
+                  },
+                  {
+                    label: `🍹 Bar (${barCount})`,
+                    value: "BAR",
+                  },
+                ]}
+              />
+              <Text size="xs" c="dimmed">
+                Showing {filteredItems.length} of {items.length} items
+              </Text>
+            </Group>
+
             {items.length === 0 ? (
               <EmptyState
                 title="No menu items yet"
-                description="Add your restaurant's delicious dishes, appetizers, or beverages."
+                description="Add your restaurant's delicious dishes, appetizers, cocktails, or beverages."
                 action={
                   <Button
                     size="xs"
                     onClick={handleOpenAddItem}
                     style={{ backgroundColor: "var(--color-primary)" }}
                   >
-                    Create First Dish
+                    Create First Item
                   </Button>
                 }
+              />
+            ) : filteredItems.length === 0 ? (
+              <EmptyState
+                title={`No ${menuTypeFilter === "BAR" ? "Bar" : "Kitchen"} items found`}
+                description={`Switch filter to view other items or create a new ${menuTypeFilter.toLowerCase()} item.`}
               />
             ) : (
               <Box style={{ overflowX: "auto" }}>
                 <Table striped highlightOnHover verticalSpacing="sm">
                   <Table.Thead>
                     <Table.Tr>
-                      <Table.Th>Dish</Table.Th>
+                      <Table.Th>Item</Table.Th>
                       <Table.Th>Category</Table.Th>
+                      <Table.Th>Type</Table.Th>
                       <Table.Th>Price</Table.Th>
                       <Table.Th>Status</Table.Th>
                       <Table.Th>Add-ons</Table.Th>
@@ -393,11 +441,13 @@ export default function MenuPage() {
                     </Table.Tr>
                   </Table.Thead>
                   <Table.Tbody>
-                    {items.map((item) => {
+                    {filteredItems.map((item) => {
                       const categoryName =
                         item.category?.name ||
                         categories.find((c) => c.id === item.categoryId)?.name ||
                         "General";
+
+                      const isBar = item.menuType === "BAR";
 
                       return (
                         <Table.Tr key={item.id}>
@@ -418,14 +468,14 @@ export default function MenuPage() {
                                     width: 40,
                                     height: 40,
                                     borderRadius: "8px",
-                                    backgroundColor: "var(--color-surface-hover)",
+                                    backgroundColor: isBar ? "var(--mantine-color-grape-0)" : "var(--color-surface-hover)",
                                     display: "flex",
                                     alignItems: "center",
                                     justifyContent: "center",
-                                    color: "var(--color-text-muted)",
+                                    color: isBar ? "var(--mantine-color-grape-6)" : "var(--color-text-muted)",
                                   }}
                                 >
-                                  <IconToolsKitchen2 size={20} />
+                                  {isBar ? <IconGlassFull size={20} /> : <IconToolsKitchen2 size={20} />}
                                 </Box>
                               )}
                               <Box>
@@ -444,6 +494,17 @@ export default function MenuPage() {
                             <Badge variant="light" color="blue" size="sm">
                               {categoryName}
                             </Badge>
+                          </Table.Td>
+                          <Table.Td>
+                            {isBar ? (
+                              <Badge color="grape" variant="light" size="sm" leftSection={<IconGlassFull size={12} />}>
+                                BAR
+                              </Badge>
+                            ) : (
+                              <Badge color="teal" variant="light" size="sm" leftSection={<IconToolsKitchen2 size={12} />}>
+                                KITCHEN
+                              </Badge>
+                            )}
                           </Table.Td>
                           <Table.Td>
                             <Text size="sm" fw={600}>
@@ -504,8 +565,8 @@ export default function MenuPage() {
           >
             {categories.length === 0 ? (
               <EmptyState
-                title="No categories found"
-                description="Categories help organize menu items for waiters and customers."
+                title="No categories yet"
+                description="Organize your menu into sections like Main Courses, Appetizers, Cocktails."
                 action={
                   <Button
                     size="xs"
@@ -538,7 +599,7 @@ export default function MenuPage() {
                           </Table.Td>
                           <Table.Td>
                             <Badge variant="light" color="gray">
-                              {count} dish(es)
+                              {count} item(s)
                             </Badge>
                           </Table.Td>
                           <Table.Td style={{ textAlign: "right" }}>
@@ -580,7 +641,7 @@ export default function MenuPage() {
           <Stack gap="md">
             <TextInput
               label="Category Name"
-              placeholder="e.g. Gourmet Burgers, Beverages"
+              placeholder="e.g. Gourmet Burgers, Cocktails, Beers"
               required
               error={catErrors.name?.message}
               {...registerCat("name", { required: "Category name is required" })}
@@ -610,6 +671,45 @@ export default function MenuPage() {
       >
         <form onSubmit={handleSubmitItem(onSubmitItem)} noValidate>
           <Stack gap="md">
+            {/* Menu Department / Type Selector */}
+            <Controller
+              name="menuType"
+              control={controlItem}
+              render={({ field }) => (
+                <Box>
+                  <Text size="sm" fw={500} mb={4}>
+                    Menu Department <span style={{ color: "var(--mantine-color-red-6)" }}>*</span>
+                  </Text>
+                  <SegmentedControl
+                    fullWidth
+                    color={field.value === "BAR" ? "grape" : "teal"}
+                    value={field.value || "KITCHEN"}
+                    onChange={(val) => field.onChange((val as "BAR" | "KITCHEN") || "KITCHEN")}
+                    data={[
+                      {
+                        value: "KITCHEN",
+                        label: (
+                          <Center style={{ gap: 8 }}>
+                            <IconToolsKitchen2 size={16} />
+                            <span>Kitchen Menu (Food)</span>
+                          </Center>
+                        ),
+                      },
+                      {
+                        value: "BAR",
+                        label: (
+                          <Center style={{ gap: 8 }}>
+                            <IconGlassFull size={16} />
+                            <span>Bar Menu (Drinks)</span>
+                          </Center>
+                        ),
+                      },
+                    ]}
+                  />
+                </Box>
+              )}
+            />
+
             {!editingItem && (
               <Controller
                 name="categoryId"
@@ -630,16 +730,16 @@ export default function MenuPage() {
             )}
 
             <TextInput
-              label="Dish Name"
-              placeholder="e.g. Classic Cheeseburger"
+              label="Item Name"
+              placeholder="e.g. Classic Cheeseburger, Mojito, IPA Beer"
               required
               error={itemErrors.name?.message}
-              {...registerItem("name", { required: "Dish name is required" })}
+              {...registerItem("name", { required: "Item name is required" })}
             />
 
             <Textarea
               label="Description"
-              placeholder="Juicy grilled patty with cheddar cheese..."
+              placeholder="Detailed description, ingredients, notes..."
               rows={3}
               {...registerItem("description")}
             />

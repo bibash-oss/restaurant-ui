@@ -20,6 +20,7 @@ import {
   ActionIcon,
   Tooltip,
   TextInput,
+  Tabs,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
@@ -50,7 +51,12 @@ import {
 } from "@/api/orders";
 import { APIGetTablesByRestaurant } from "@/api/tables";
 import { Order, OrderItem, OrderStatus, Table as TableType } from "@/types";
-import { printThermalReceipt, ReceiptData, ReceiptItem } from "@/utils/thermalReceipt";
+import {
+  printThermalReceipt,
+  printStationTicket,
+  ReceiptData,
+  ReceiptItem,
+} from "@/utils/thermalReceipt";
 import {
   connectUsbPrinter,
   disconnectUsbPrinter,
@@ -60,14 +66,16 @@ import {
   isUsbPrintSupported,
 } from "@/utils/usbPrinter";
 import {
-  getLanPrinterConfig,
-  saveLanPrinterConfig,
+  getStationPrinterConfig,
+  saveStationPrinterConfig,
+  getDualPrinterConfig,
   checkLanPrinterStatus,
   printTestReceiptToLan,
   discoverLanPrinters,
   autoDetectAndSaveThermalPrinter,
   checkPrintAgentActive,
-  LanPrinterConfig,
+  StationPrinterConfig,
+  PrinterStation,
   DiscoveredPrinter,
 } from "@/utils/lanPrinter";
 
@@ -177,12 +185,22 @@ export default function OrdersPage() {
     }
   };
 
-  // LAN / Network Thermal Printer state
-  const [lanConfig, setLanConfig] = useState<LanPrinterConfig>(() => getLanPrinterConfig());
-  const [lanOnline, setLanOnline] = useState<boolean | null>(null);
+  // LAN / Network Thermal Printer state (Kitchen & Bar Stations)
+  const [activeStationTab, setActiveStationTab] = useState<PrinterStation>("kitchen");
+  const [kitchenConfig, setKitchenConfig] = useState<StationPrinterConfig>(() =>
+    getStationPrinterConfig("kitchen")
+  );
+  const [barConfig, setBarConfig] = useState<StationPrinterConfig>(() =>
+    getStationPrinterConfig("bar")
+  );
+  const [kitchenOnline, setKitchenOnline] = useState<boolean | null>(null);
+  const [barOnline, setBarOnline] = useState<boolean | null>(null);
+
   const [lanModalOpened, { open: openLanModal, close: closeLanModal }] = useDisclosure(false);
-  const [lanIpInput, setLanIpInput] = useState<string>(lanConfig.ip);
-  const [lanPortInput, setLanPortInput] = useState<string>(String(lanConfig.port || 9100));
+  const [stationIpInput, setStationIpInput] = useState<string>(kitchenConfig.ip);
+  const [stationPortInput, setStationPortInput] = useState<string>(String(kitchenConfig.port || 9100));
+  const [stationEnabled, setStationEnabled] = useState<boolean>(kitchenConfig.enabled);
+
   const [isTestingLan, setIsTestingLan] = useState<boolean>(false);
   const [isDiscovering, setIsDiscovering] = useState<boolean>(false);
   const [discoveredPrinters, setDiscoveredPrinters] = useState<DiscoveredPrinter[]>([]);
@@ -190,29 +208,51 @@ export default function OrdersPage() {
   const [agentActive, setAgentActive] = useState<boolean | null>(null);
   const [agentModalOpened, { open: openAgentModal, close: closeAgentModal }] = useDisclosure(false);
 
+  // Sync inputs when active station tab changes
+  const handleStationTabChange = (tab: string | null) => {
+    const station = (tab as PrinterStation) || "kitchen";
+    setActiveStationTab(station);
+    const cfg = station === "bar" ? barConfig : kitchenConfig;
+    setStationIpInput(cfg.ip);
+    setStationPortInput(String(cfg.port || 9100));
+    setStationEnabled(cfg.enabled);
+    setLanTestResult(null);
+  };
+
   useEffect(() => {
     checkPrintAgentActive().then(setAgentActive);
-    const config = getLanPrinterConfig();
-    setLanConfig(config);
-    setLanIpInput(config.ip);
-    setLanPortInput(String(config.port || 9100));
+    const kCfg = getStationPrinterConfig("kitchen");
+    const bCfg = getStationPrinterConfig("bar");
+    setKitchenConfig(kCfg);
+    setBarConfig(bCfg);
+    setStationIpInput(kCfg.ip);
+    setStationPortInput(String(kCfg.port || 9100));
+    setStationEnabled(kCfg.enabled);
 
-    if (config.ip) {
-      checkLanPrinterStatus(config.ip, config.port).then((res) => {
-        setLanOnline(res.online);
+    if (kCfg.ip && kCfg.enabled) {
+      checkLanPrinterStatus(kCfg.ip, kCfg.port).then((res) => {
+        setKitchenOnline(res.online);
       });
-    } else {
-      // Auto-detect printer dynamically on the local network if no IP configured
+    }
+
+    if (bCfg.ip && bCfg.enabled) {
+      checkLanPrinterStatus(bCfg.ip, bCfg.port).then((res) => {
+        setBarOnline(res.online);
+      });
+    }
+
+    // Auto-detect printer dynamically if kitchen IP is not yet set
+    if (!kCfg.ip) {
       setIsDiscovering(true);
-      autoDetectAndSaveThermalPrinter()
+      autoDetectAndSaveThermalPrinter("kitchen")
         .then((found) => {
           setIsDiscovering(false);
           if (found) {
-            const updated = getLanPrinterConfig();
-            setLanConfig(updated);
-            setLanIpInput(updated.ip);
-            setLanPortInput(String(updated.port));
-            setLanOnline(true);
+            const updated = getStationPrinterConfig("kitchen");
+            setKitchenConfig(updated);
+            setStationIpInput(updated.ip);
+            setStationPortInput(String(updated.port));
+            setKitchenOnline(true);
           }
         })
         .catch(() => {
@@ -221,15 +261,26 @@ export default function OrdersPage() {
     }
   }, []);
 
+  // Periodic health check for configured station printers
   useEffect(() => {
-    if (lanConfig.ip) {
-      checkLanPrinterStatus(lanConfig.ip, lanConfig.port).then((res) => {
-        setLanOnline(res.online);
+    if (kitchenConfig.ip && kitchenConfig.enabled) {
+      checkLanPrinterStatus(kitchenConfig.ip, kitchenConfig.port).then((res) => {
+        setKitchenOnline(res.online);
       });
     } else {
-      setLanOnline(null);
+      setKitchenOnline(null);
     }
-  }, [lanConfig.ip, lanConfig.port]);
+  }, [kitchenConfig.ip, kitchenConfig.port, kitchenConfig.enabled]);
+
+  useEffect(() => {
+    if (barConfig.ip && barConfig.enabled) {
+      checkLanPrinterStatus(barConfig.ip, barConfig.port).then((res) => {
+        setBarOnline(res.online);
+      });
+    } else {
+      setBarOnline(null);
+    }
+  }, [barConfig.ip, barConfig.port, barConfig.enabled]);
 
   const handleDiscoverLan = async () => {
     setIsDiscovering(true);
@@ -240,18 +291,13 @@ export default function OrdersPage() {
       if (printers.length === 0) {
         setLanTestResult({
           success: false,
-          message: "No raw port 9100 printers detected on your local subnet. Please verify printer is powered on and connected to your router.",
+          message: "No raw port 9100 printers detected on your local subnet. Please verify printers are turned on and connected to the router.",
         });
       } else {
-        const selected = printers[0];
-        if (selected) {
-          setLanIpInput(selected.ip);
-          setLanPortInput(String(selected.port));
-          setLanTestResult({
-            success: true,
-            message: `Found ${printers.length} LAN printer device(s). Selected: ${selected.ip}:${selected.port}`,
-          });
-        }
+        setLanTestResult({
+          success: true,
+          message: `Found ${printers.length} LAN printer device(s). You can assign each to Kitchen or Bar below.`,
+        });
       }
     } catch (err: any) {
       setLanTestResult({
@@ -269,17 +315,18 @@ export default function OrdersPage() {
   const handleTestLan = async () => {
     setIsTestingLan(true);
     setLanTestResult(null);
+    const stationLabel = activeStationTab === "bar" ? "Bar" : "Kitchen";
     try {
-      const res = await checkLanPrinterStatus(lanIpInput.trim(), parseInt(lanPortInput, 10));
+      const res = await checkLanPrinterStatus(stationIpInput.trim(), parseInt(stationPortInput, 10));
       if (res.online) {
         setLanTestResult({
           success: true,
-          message: `Success! Printer is reachable at ${lanIpInput}:${lanPortInput}`,
+          message: `Success! ${stationLabel} printer is reachable at ${stationIpInput}:${stationPortInput}`,
         });
       } else {
         setLanTestResult({
           success: false,
-          message: res.error || "Cannot connect to printer at this IP",
+          message: res.error || `Cannot connect to ${stationLabel} printer at this IP`,
         });
       }
     } finally {
@@ -290,26 +337,69 @@ export default function OrdersPage() {
   const handlePrintTestSlip = async () => {
     setIsPrintingTestSlip(true);
     setLanTestResult(null);
+    const stationLabel = activeStationTab === "bar" ? "Bar" : "Kitchen";
     try {
-      const res = await printTestReceiptToLan(lanIpInput.trim(), parseInt(lanPortInput, 10));
+      const res = await printTestReceiptToLan(
+        stationIpInput.trim(),
+        parseInt(stationPortInput, 10),
+        stationLabel
+      );
       setLanTestResult(res);
       if (res.success) {
-        setLanOnline(true);
+        if (activeStationTab === "kitchen") setKitchenOnline(true);
+        else setBarOnline(true);
       }
     } finally {
       setIsPrintingTestSlip(false);
     }
   };
 
-  const handleSaveLan = () => {
-    const updated = saveLanPrinterConfig({
-      ip: lanIpInput.trim(),
-      port: parseInt(lanPortInput, 10) || 9100,
+  const handleSaveStation = () => {
+    const updated = saveStationPrinterConfig(activeStationTab, {
+      ip: stationIpInput.trim(),
+      port: parseInt(stationPortInput, 10) || 9100,
+      enabled: stationEnabled,
+    });
+    if (activeStationTab === "kitchen") {
+      setKitchenConfig(updated);
+      if (updated.ip && updated.enabled) {
+        checkLanPrinterStatus(updated.ip, updated.port).then((res) => setKitchenOnline(res.online));
+      } else {
+        setKitchenOnline(null);
+      }
+    } else {
+      setBarConfig(updated);
+      if (updated.ip && updated.enabled) {
+        checkLanPrinterStatus(updated.ip, updated.port).then((res) => setBarOnline(res.online));
+      } else {
+        setBarOnline(null);
+      }
+    }
+    closeLanModal();
+  };
+
+  const handleAssignDiscoveredPrinter = (p: DiscoveredPrinter, station: PrinterStation) => {
+    const updated = saveStationPrinterConfig(station, {
+      ip: p.ip,
+      port: p.port,
       enabled: true,
     });
-    setLanConfig(updated);
-    checkLanPrinterStatus(updated.ip, updated.port).then((res) => setLanOnline(res.online));
-    closeLanModal();
+    if (station === "kitchen") {
+      setKitchenConfig(updated);
+      setKitchenOnline(true);
+    } else {
+      setBarConfig(updated);
+      setBarOnline(true);
+    }
+    if (activeStationTab === station) {
+      setStationIpInput(p.ip);
+      setStationPortInput(String(p.port));
+      setStationEnabled(true);
+    }
+    setLanTestResult({
+      success: true,
+      message: `Assigned ${p.ip}:${p.port} to ${station === "bar" ? "Bar" : "Kitchen"} Station!`,
+    });
   };
 
     // Synchronize state to refs so callbacks never re-create or cause re-render loops
@@ -338,7 +428,7 @@ export default function OrdersPage() {
 
     // Core receipt printer function
     const handlePrintOrder = useCallback(
-      async (order: Order, itemsToPrint?: OrderItem[]) => {
+      async (order: Order, itemsToPrint?: OrderItem[], station?: PrinterStation) => {
         let finalItems = itemsToPrint;
         if (!finalItems || finalItems.length === 0) {
           const existing = order.items || (order as any).orderItems;
@@ -365,11 +455,17 @@ export default function OrdersPage() {
             quantity: Number(ad.quantity || 1),
           }));
 
+          const itemMenuType = (it.menuItem?.menuType ||
+            (it as any).menuType ||
+            (it.menuItem as any)?.MenuType ||
+            "KITCHEN") as "BAR" | "KITCHEN";
+
           return {
             name: it.menuItem?.name || `Item ${it.menuItemId?.slice(0, 8) || ""}`,
             quantity: it.quantity || 1,
             price: Number(it.price ?? it.menuItem?.price ?? 0),
             addons: mappedAddons,
+            menuType: itemMenuType,
           };
         });
 
@@ -396,7 +492,7 @@ export default function OrdersPage() {
           notes: order.notes,
         };
 
-        return await printThermalReceipt(receiptData);
+        return await printThermalReceipt(receiptData, station ? { station } : undefined);
       },
       [getTableNumber]
     );
@@ -595,25 +691,87 @@ export default function OrdersPage() {
                 />
               </Tooltip>
 
-              {/* LAN Network Thermal Printer Badge & Quick Config */}
-              <Tooltip label="Click to configure or auto-detect your Ethernet/LAN Thermal Printer">
+              {/* Kitchen Station Thermal Printer Badge */}
+              <Tooltip label="Click to configure Kitchen Thermal Printer (Food items)">
                 <Badge
-                  color={lanConfig.ip ? (lanOnline ? "teal" : lanOnline === false ? "red" : "gray") : "blue"}
-                  variant="filled"
+                  color={
+                    kitchenConfig.ip && kitchenConfig.enabled
+                      ? kitchenOnline
+                        ? "teal"
+                        : kitchenOnline === false
+                        ? "red"
+                        : "gray"
+                      : "blue"
+                  }
+                  variant={kitchenConfig.enabled ? "filled" : "outline"}
                   size="lg"
                   style={{ cursor: "pointer" }}
-                  leftSection={<IconNetwork size={14} />}
+                  leftSection={<Text size="xs">🍳</Text>}
                   onClick={() => {
                     checkPrintAgentActive().then(setAgentActive);
-                    const cfg = getLanPrinterConfig();
-                    setLanConfig(cfg);
-                    setLanIpInput(cfg.ip);
-                    setLanPortInput(String(cfg.port || 9100));
+                    const kCfg = getStationPrinterConfig("kitchen");
+                    setKitchenConfig(kCfg);
+                    setActiveStationTab("kitchen");
+                    setStationIpInput(kCfg.ip);
+                    setStationPortInput(String(kCfg.port || 9100));
+                    setStationEnabled(kCfg.enabled);
                     setLanTestResult(null);
                     openLanModal();
                   }}
                 >
-                  LAN: {lanConfig.ip ? `${lanConfig.ip} (${lanOnline ? "Online" : lanOnline === false ? "Offline" : "Checking..."})` : "Auto-Detect Printer"}
+                  Kitchen:{" "}
+                  {kitchenConfig.ip
+                    ? `${kitchenConfig.ip} (${
+                        kitchenOnline
+                          ? "Online"
+                          : kitchenOnline === false
+                          ? "Offline"
+                          : "Checking..."
+                      })`
+                    : "Auto-Detect"}
+                </Badge>
+              </Tooltip>
+
+              {/* Bar Station Thermal Printer Badge */}
+              <Tooltip label="Click to configure Bar Thermal Printer (Drink & Beverage items)">
+                <Badge
+                  color={
+                    barConfig.ip && barConfig.enabled
+                      ? barOnline
+                        ? "grape"
+                        : barOnline === false
+                        ? "red"
+                        : "gray"
+                      : "gray"
+                  }
+                  variant={barConfig.enabled ? "filled" : "outline"}
+                  size="lg"
+                  style={{ cursor: "pointer" }}
+                  leftSection={<Text size="xs">🍸</Text>}
+                  onClick={() => {
+                    checkPrintAgentActive().then(setAgentActive);
+                    const bCfg = getStationPrinterConfig("bar");
+                    setBarConfig(bCfg);
+                    setActiveStationTab("bar");
+                    setStationIpInput(bCfg.ip);
+                    setStationPortInput(String(bCfg.port || 9100));
+                    setStationEnabled(bCfg.enabled);
+                    setLanTestResult(null);
+                    openLanModal();
+                  }}
+                >
+                  Bar:{" "}
+                  {barConfig.enabled
+                    ? barConfig.ip
+                      ? `${barConfig.ip} (${
+                          barOnline
+                            ? "Online"
+                            : barOnline === false
+                            ? "Offline"
+                            : "Checking..."
+                        })`
+                      : "Set IP"
+                    : "Disabled"}
                 </Badge>
               </Tooltip>
 
@@ -948,24 +1106,62 @@ export default function OrdersPage() {
 
               <Divider />
 
-              <Group justify="space-between">
-                <Button
-                  variant="filled"
-                  color="teal"
-                  loading={isPrintingModal}
-                  leftSection={<IconPrinter size={16} />}
-                  onClick={async () => {
-                    if (!selectedOrder) return;
-                    setIsPrintingModal(true);
-                    try {
-                      await handlePrintOrder(selectedOrder, orderItems);
-                    } finally {
-                      setIsPrintingModal(false);
-                    }
-                  }}
-                >
-                  Print 80mm Receipt
-                </Button>
+              <Group justify="space-between" wrap="wrap" gap="xs">
+                <Group gap="xs" wrap="wrap">
+                  <Button
+                    variant="filled"
+                    color="teal"
+                    loading={isPrintingModal}
+                    leftSection={<IconPrinter size={16} />}
+                    onClick={async () => {
+                      if (!selectedOrder) return;
+                      setIsPrintingModal(true);
+                      try {
+                        await handlePrintOrder(selectedOrder, orderItems);
+                      } finally {
+                        setIsPrintingModal(false);
+                      }
+                    }}
+                  >
+                    Print All Tickets
+                  </Button>
+                  <Button
+                    variant="light"
+                    color="orange"
+                    size="sm"
+                    loading={isPrintingModal}
+                    leftSection={<Text size="xs">🍳</Text>}
+                    onClick={async () => {
+                      if (!selectedOrder) return;
+                      setIsPrintingModal(true);
+                      try {
+                        await handlePrintOrder(selectedOrder, orderItems, "kitchen");
+                      } finally {
+                        setIsPrintingModal(false);
+                      }
+                    }}
+                  >
+                    Kitchen Slip
+                  </Button>
+                  <Button
+                    variant="light"
+                    color="grape"
+                    size="sm"
+                    loading={isPrintingModal}
+                    leftSection={<Text size="xs">🍸</Text>}
+                    onClick={async () => {
+                      if (!selectedOrder) return;
+                      setIsPrintingModal(true);
+                      try {
+                        await handlePrintOrder(selectedOrder, orderItems, "bar");
+                      } finally {
+                        setIsPrintingModal(false);
+                      }
+                    }}
+                  >
+                    Bar Slip
+                  </Button>
+                </Group>
                 <Button variant="default" onClick={closeModal}>
                   Close
                 </Button>
@@ -981,7 +1177,7 @@ export default function OrdersPage() {
           title={
             <Group gap="xs">
               <IconNetwork size={20} color="var(--mantine-color-teal-6)" />
-              <Text fw={700}>LAN / Network Thermal Printer Setup</Text>
+              <Text fw={700}>Dual Station Thermal Printer Setup (Kitchen & Bar)</Text>
             </Group>
           }
           size="lg"
@@ -990,7 +1186,7 @@ export default function OrdersPage() {
           <Stack gap="md">
             <Group justify="space-between" align="center" wrap="wrap" gap="xs">
               <Text size="sm" c="dimmed">
-                Configure your 80mm thermal receipt printer over your local network.
+                Configure dedicated 80mm thermal printers for Kitchen (Food) and Bar (Drinks).
               </Text>
               <Group gap="xs">
                 <Badge
@@ -1014,16 +1210,101 @@ export default function OrdersPage() {
               </Group>
             </Group>
 
+            {/* Station Selector Tabs */}
+            <Tabs value={activeStationTab} onChange={handleStationTabChange} color="teal">
+              <Tabs.List grow>
+                <Tabs.Tab
+                  value="kitchen"
+                  leftSection={<Text size="sm">🍳</Text>}
+                  rightSection={
+                    <Badge
+                      size="xs"
+                      color={
+                        kitchenConfig.enabled
+                          ? kitchenOnline
+                            ? "teal"
+                            : kitchenOnline === false
+                            ? "red"
+                            : "gray"
+                          : "gray"
+                      }
+                      variant="filled"
+                    >
+                      {kitchenConfig.enabled
+                        ? kitchenOnline
+                          ? "Online"
+                          : kitchenOnline === false
+                          ? "Offline"
+                          : "Ready"
+                        : "Disabled"}
+                    </Badge>
+                  }
+                >
+                  Kitchen Station (Food)
+                </Tabs.Tab>
+                <Tabs.Tab
+                  value="bar"
+                  leftSection={<Text size="sm">🍸</Text>}
+                  rightSection={
+                    <Badge
+                      size="xs"
+                      color={
+                        barConfig.enabled
+                          ? barOnline
+                            ? "grape"
+                            : barOnline === false
+                            ? "red"
+                            : "gray"
+                          : "gray"
+                      }
+                      variant="filled"
+                    >
+                      {barConfig.enabled
+                        ? barOnline
+                          ? "Online"
+                          : barOnline === false
+                          ? "Offline"
+                          : "Ready"
+                        : "Disabled"}
+                    </Badge>
+                  }
+                >
+                  Bar Station (Drinks)
+                </Tabs.Tab>
+              </Tabs.List>
+            </Tabs>
+
+            {/* Station Enabled Toggle */}
+            <Card withBorder padding="xs" radius="sm">
+              <Group justify="space-between" align="center">
+                <Box>
+                  <Text size="sm" fw={600}>
+                    Enable {activeStationTab === "bar" ? "Bar" : "Kitchen"} Station Printing
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    {activeStationTab === "bar"
+                      ? "Automatically print drink & beverage tickets to this printer"
+                      : "Automatically print food order tickets to this printer"}
+                  </Text>
+                </Box>
+                <Switch
+                  checked={stationEnabled}
+                  onChange={(e) => setStationEnabled(e.currentTarget.checked)}
+                  color={activeStationTab === "bar" ? "grape" : "teal"}
+                />
+              </Group>
+            </Card>
+
             {/* Auto-Detection Card */}
             <Card withBorder padding="md" radius="md" style={{ background: "var(--mantine-color-teal-0)" }}>
               <Group justify="space-between" align="center" wrap="wrap" gap="sm">
                 <Box>
                   <Group gap="xs">
                     <Text fw={700} size="sm">Auto-Detect on Local Network</Text>
-                    <Badge size="xs" color="teal" variant="light">Fast Subnet Scan</Badge>
+                    <Badge size="xs" color="teal" variant="light">Subnet Scan</Badge>
                   </Group>
                   <Text size="xs" c="dimmed">
-                    Scans your router subnet for raw ESC/POS thermal printers on port 9100
+                    Scans your network for port 9100 thermal printers to assign to Kitchen or Bar
                   </Text>
                 </Box>
                 <Button
@@ -1045,7 +1326,8 @@ export default function OrdersPage() {
                     Found Printers ({discoveredPrinters.length}):
                   </Text>
                   {discoveredPrinters.map((p) => {
-                    const isSelected = lanIpInput.trim() === p.ip;
+                    const isCurrentKitchen = kitchenConfig.ip === p.ip;
+                    const isCurrentBar = barConfig.ip === p.ip;
                     return (
                       <Paper
                         key={p.ip}
@@ -1053,45 +1335,44 @@ export default function OrdersPage() {
                         p="xs"
                         radius="sm"
                         style={{
-                          cursor: "pointer",
-                          borderColor: isSelected ? "var(--mantine-color-teal-6)" : undefined,
-                          backgroundColor: isSelected ? "var(--mantine-color-teal-1)" : "white",
-                        }}
-                        onClick={() => {
-                          setLanIpInput(p.ip);
-                          setLanPortInput(String(p.port));
-                          setLanTestResult(null);
+                          backgroundColor: "white",
                         }}
                       >
-                        <Group justify="space-between" wrap="nowrap">
+                        <Group justify="space-between" wrap="wrap" gap="xs">
                           <Group gap="xs" wrap="nowrap">
                             <IconPrinter size={22} color="var(--mantine-color-teal-7)" />
                             <Box>
                               <Group gap="xs">
                                 <Text size="sm" fw={700}>{p.name}</Text>
                                 <Badge size="xs" color="teal" variant="light">Port {p.port}</Badge>
-                                {p.source === "local-agent" ? (
-                                  <Badge size="xs" color="blue" variant="outline">via Local Agent</Badge>
-                                ) : (
-                                  <Badge size="xs" color="gray" variant="outline">via Server Route</Badge>
+                                {isCurrentKitchen && (
+                                  <Badge size="xs" color="teal" variant="filled">🍳 Kitchen Assigned</Badge>
+                                )}
+                                {isCurrentBar && (
+                                  <Badge size="xs" color="grape" variant="filled">🍸 Bar Assigned</Badge>
                                 )}
                               </Group>
                               <Text size="xs" c="dimmed">IP: {p.ip}</Text>
                             </Box>
                           </Group>
-                          <Button
-                            size="xs"
-                            variant={isSelected ? "filled" : "light"}
-                            color="teal"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setLanIpInput(p.ip);
-                              setLanPortInput(String(p.port));
-                              setLanTestResult(null);
-                            }}
-                          >
-                            {isSelected ? "Selected" : "Select"}
-                          </Button>
+                          <Group gap="xs">
+                            <Button
+                              size="xs"
+                              variant={isCurrentKitchen ? "light" : "filled"}
+                              color="teal"
+                              onClick={() => handleAssignDiscoveredPrinter(p, "kitchen")}
+                            >
+                              Assign 🍳 Kitchen
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant={isCurrentBar ? "light" : "filled"}
+                              color="grape"
+                              onClick={() => handleAssignDiscoveredPrinter(p, "bar")}
+                            >
+                              Assign 🍸 Bar
+                            </Button>
+                          </Group>
                         </Group>
                       </Paper>
                     );
@@ -1100,22 +1381,25 @@ export default function OrdersPage() {
               )}
             </Card>
 
-            <Divider label="Active Printer Settings" labelPosition="center" />
+            <Divider
+              label={`${activeStationTab === "bar" ? "🍸 Bar Station" : "🍳 Kitchen Station"} IP Configuration`}
+              labelPosition="center"
+            />
 
             <TextInput
-              label="Printer IP Address"
+              label={`${activeStationTab === "bar" ? "Bar" : "Kitchen"} Printer IP Address`}
               placeholder="e.g. 192.168.1.100"
-              value={lanIpInput}
-              onChange={(e) => setLanIpInput(e.currentTarget.value)}
-              description="Automatically detected by Auto-Detect, or enter manually"
+              value={stationIpInput}
+              onChange={(e) => setStationIpInput(e.currentTarget.value)}
+              description="IP address of the 80mm thermal receipt printer at this station"
             />
 
             <TextInput
               label="Port"
               placeholder="9100"
-              value={lanPortInput}
-              onChange={(e) => setLanPortInput(e.currentTarget.value)}
-              description="Standard thermal printer raw port is 9100"
+              value={stationPortInput}
+              onChange={(e) => setStationPortInput(e.currentTarget.value)}
+              description="Standard raw ESC/POS port is 9100"
             />
 
             {lanTestResult && (
@@ -1134,16 +1418,16 @@ export default function OrdersPage() {
                   variant="light"
                   color="blue"
                   loading={isTestingLan}
-                  disabled={!lanIpInput.trim()}
+                  disabled={!stationIpInput.trim()}
                   onClick={handleTestLan}
                 >
                   Ping Connection
                 </Button>
                 <Button
                   variant="filled"
-                  color="teal"
+                  color={activeStationTab === "bar" ? "grape" : "teal"}
                   loading={isPrintingTestSlip}
-                  disabled={!lanIpInput.trim()}
+                  disabled={!stationIpInput.trim()}
                   leftSection={<IconPrinter size={16} />}
                   onClick={handlePrintTestSlip}
                 >
@@ -1154,8 +1438,11 @@ export default function OrdersPage() {
                 <Button variant="default" onClick={closeLanModal}>
                   Cancel
                 </Button>
-                <Button color="teal" onClick={handleSaveLan} disabled={!lanIpInput.trim()}>
-                  Save & Set Active
+                <Button
+                  color={activeStationTab === "bar" ? "grape" : "teal"}
+                  onClick={handleSaveStation}
+                >
+                  Save Station Settings
                 </Button>
               </Group>
             </Group>

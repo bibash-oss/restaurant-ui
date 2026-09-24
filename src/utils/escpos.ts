@@ -48,7 +48,8 @@ export function buildEscPosReceipt(data: ReceiptData): Uint8Array {
   if (data.restaurantAddress) {
     writeLine(data.restaurantAddress);
   }
-  writeLine("*** KITCHEN ORDER TICKET ***");
+  const ticketHeader = data.stationTitle || "KITCHEN ORDER TICKET";
+  writeLine(`*** ${ticketHeader.toUpperCase()} ***`);
 
   // 4. Dashed divider
   writeLine("-".repeat(COLS_80MM));
@@ -164,7 +165,11 @@ export function buildEscPosReceipt(data: ReceiptData): Uint8Array {
 /**
  * Builds a small test receipt to verify printer connectivity and hardware output
  */
-export function buildEscPosTestReceipt(ip: string = "Network Printer", port: number = 9100): Uint8Array {
+export function buildEscPosTestReceipt(
+  ip: string = "Network Printer",
+  port: number = 9100,
+  stationName: string = "Kitchen"
+): Uint8Array {
   const parts: (number[] | Uint8Array)[] = [];
   const encoder = new TextEncoder();
 
@@ -185,15 +190,16 @@ export function buildEscPosTestReceipt(ip: string = "Network Printer", port: num
   // 3. Double size title
   writeRaw([0x1d, 0x21, 0x11]);
   writeRaw([0x1b, 0x45, 0x01]); // Bold
-  writeLine("TEST PRINT SUCCESS");
+  writeLine(`${stationName.toUpperCase()} TEST OK`);
   writeRaw([0x1d, 0x21, 0x00]); // Normal
   writeRaw([0x1b, 0x45, 0x00]);
 
-  writeLine("80mm Thermal LAN Printer");
+  writeLine(`80mm Thermal Printer (${stationName} Station)`);
   writeLine("-".repeat(COLS_80MM));
 
   // 4. Details
   writeRaw([0x1b, 0x61, 0x00]); // Left
+  writeLine(`Station    : ${stationName}`);
   writeLine(`IP Address : ${ip}`);
   writeLine(`Port       : ${port}`);
   writeLine(`Date/Time  : ${new Date().toLocaleString()}`);
@@ -202,7 +208,7 @@ export function buildEscPosTestReceipt(ip: string = "Network Printer", port: num
 
   // 5. Center message
   writeRaw([0x1b, 0x61, 0x01]); // Center
-  writeLine("Kitchen ordering system is ready!");
+  writeLine(`${stationName} station ordering system is ready!`);
   writeLine("=".repeat(COLS_80MM));
 
   // 6. Feed and cut

@@ -9,6 +9,7 @@ export interface ReceiptItem {
   quantity: number;
   price: number;
   addons?: ReceiptAddon[];
+  menuType?: "BAR" | "KITCHEN";
 }
 
 export interface ReceiptData {
@@ -20,6 +21,7 @@ export interface ReceiptData {
   items: ReceiptItem[];
   totalAmount: number;
   notes?: string;
+  stationTitle?: string;
 }
 
 function escapeHtml(str: string): string {
@@ -216,7 +218,7 @@ export function generateReceiptHtml(data: ReceiptData): string {
         <div class="restaurant-header">
           <div class="restaurant-title uppercase">${escapeHtml(data.restaurantName)}</div>
           ${data.restaurantAddress ? `<div class="restaurant-sub">${escapeHtml(data.restaurantAddress)}</div>` : ""}
-          <div class="restaurant-sub">*** CUSTOMER RECEIPT ***</div>
+          <div class="restaurant-sub">*** ${escapeHtml(data.stationTitle || "CUSTOMER RECEIPT")} ***</div>
         </div>
 
         <div class="dashed-divider"></div>
@@ -291,26 +293,156 @@ export function generateReceiptHtml(data: ReceiptData): string {
 
 import { buildEscPosReceipt } from "./escpos";
 import { getActivePrinter, printDirectToUsb } from "./usbPrinter";
-import { getLanPrinterConfig, printDirectToLan } from "./lanPrinter";
+import {
+  getDualPrinterConfig,
+  getStationPrinterConfig,
+  PrinterStation,
+  printDirectToLan,
+} from "./lanPrinter";
 
-export async function printThermalReceipt(data: ReceiptData): Promise<boolean> {
+export interface PrintThermalOptions {
+  station?: PrinterStation;
+}
+
+function calculateItemsTotal(items: ReceiptItem[]): number {
+  return items.reduce((sum, it) => {
+    const itemTotal = it.quantity * it.price;
+    const addonsTotal = (it.addons || []).reduce(
+      (aSum, a) => aSum + a.price * (a.quantity || 1),
+      0
+    );
+    return sum + itemTotal + addonsTotal;
+  }, 0);
+}
+
+/**
+ * Print a station-specific ticket (Kitchen or Bar) directly to that station's printer
+ */
+export async function printStationTicket(
+  data: ReceiptData,
+  station: PrinterStation
+): Promise<boolean> {
+  const stationConfig = getStationPrinterConfig(station);
+  if (!stationConfig.enabled || !stationConfig.ip) return false;
+
+  try {
+    const filteredItems = data.items.filter((it) => {
+      if (station === "bar") return it.menuType === "BAR";
+      return it.menuType !== "BAR";
+    });
+
+    // If no items for this station, nothing to print
+    if (filteredItems.length === 0) return true;
+
+    const stationData: ReceiptData = {
+      ...data,
+      items: filteredItems,
+      totalAmount: calculateItemsTotal(filteredItems),
+      stationTitle:
+        station === "bar" ? "BAR ORDER TICKET (DRINKS)" : "KITCHEN ORDER TICKET (FOOD)",
+    };
+
+    const escposData = buildEscPosReceipt(stationData);
+    const ok = await printDirectToLan(escposData, stationConfig.ip, stationConfig.port);
+    if (ok) return true;
+  } catch (e) {
+    console.warn(`LAN print to ${station} station failed:`, e);
+  }
+  return false;
+}
+
+export async function printThermalReceipt(
+  data: ReceiptData,
+  options?: PrintThermalOptions
+): Promise<boolean> {
   if (typeof window === "undefined") return false;
 
-  // 1. Priority 1: Network / LAN thermal printer (e.g. 192.168.1.45:9100)
-  const lanConfig = getLanPrinterConfig();
-  if (lanConfig.enabled && lanConfig.ip) {
-    try {
-      const escposData = buildEscPosReceipt(data);
-      const ok = await printDirectToLan(escposData, lanConfig.ip, lanConfig.port);
-      if (ok) {
-        return true;
+  // 1. If explicit station requested, route directly to that station
+  if (options?.station) {
+    const ok = await printStationTicket(data, options.station);
+    if (ok) return true;
+  } else {
+    // 2. Dual Station Routing: Check if both or either station is configured
+    const { kitchen, bar } = getDualPrinterConfig();
+    const isKitchenConfigured = kitchen.enabled && !!kitchen.ip.trim();
+    const isBarConfigured = bar.enabled && !!bar.ip.trim();
+
+    const barItems = data.items.filter((it) => it.menuType === "BAR");
+    const kitchenItems = data.items.filter((it) => it.menuType !== "BAR");
+
+    // Case A: Both printers configured
+    if (isKitchenConfigured && isBarConfigured) {
+      let printedAny = false;
+
+      // Print Food ticket to Kitchen printer
+      if (kitchenItems.length > 0) {
+        const kitchenData: ReceiptData = {
+          ...data,
+          items: kitchenItems,
+          totalAmount: calculateItemsTotal(kitchenItems),
+          stationTitle: "KITCHEN ORDER TICKET (FOOD)",
+        };
+        try {
+          const escpos = buildEscPosReceipt(kitchenData);
+          const ok = await printDirectToLan(escpos, kitchen.ip, kitchen.port);
+          if (ok) printedAny = true;
+        } catch (e) {
+          console.warn("Failed printing to Kitchen printer:", e);
+        }
       }
-    } catch (e) {
-      console.warn("LAN print failed, falling back to other methods:", e);
+
+      // Print Drink ticket to Bar printer
+      if (barItems.length > 0) {
+        const barData: ReceiptData = {
+          ...data,
+          items: barItems,
+          totalAmount: calculateItemsTotal(barItems),
+          stationTitle: "BAR ORDER TICKET (DRINKS)",
+        };
+        try {
+          const escpos = buildEscPosReceipt(barData);
+          const ok = await printDirectToLan(escpos, bar.ip, bar.port);
+          if (ok) printedAny = true;
+        } catch (e) {
+          console.warn("Failed printing to Bar printer:", e);
+        }
+      }
+
+      if (printedAny) return true;
+    }
+
+    // Case B: Only Kitchen printer is configured
+    if (isKitchenConfigured && !isBarConfigured) {
+      try {
+        const ticketData: ReceiptData = {
+          ...data,
+          stationTitle: data.stationTitle || "KITCHEN ORDER TICKET",
+        };
+        const escpos = buildEscPosReceipt(ticketData);
+        const ok = await printDirectToLan(escpos, kitchen.ip, kitchen.port);
+        if (ok) return true;
+      } catch (e) {
+        console.warn("Kitchen LAN print failed:", e);
+      }
+    }
+
+    // Case C: Only Bar printer is configured
+    if (!isKitchenConfigured && isBarConfigured) {
+      try {
+        const ticketData: ReceiptData = {
+          ...data,
+          stationTitle: data.stationTitle || "BAR ORDER TICKET",
+        };
+        const escpos = buildEscPosReceipt(ticketData);
+        const ok = await printDirectToLan(escpos, bar.ip, bar.port);
+        if (ok) return true;
+      } catch (e) {
+        console.warn("Bar LAN print failed:", e);
+      }
     }
   }
 
-  // 2. Priority 2: Direct USB printer if plugged in
+  // 3. Priority 2: Direct USB printer if plugged in
   const usbPrinter = getActivePrinter();
   if (usbPrinter) {
     try {
@@ -324,7 +456,7 @@ export async function printThermalReceipt(data: ReceiptData): Promise<boolean> {
     }
   }
 
-  // 3. Fallback: Standard browser print dialog
+  // 4. Fallback: Standard browser print dialog
   const existingIframe = document.getElementById("thermal-receipt-print-frame");
   if (existingIframe) {
     existingIframe.remove();

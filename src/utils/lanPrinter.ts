@@ -2,10 +2,19 @@
 
 import { buildEscPosTestReceipt } from "./escpos";
 
-export interface LanPrinterConfig {
+export type PrinterStation = "kitchen" | "bar";
+
+export interface StationPrinterConfig {
   ip: string;
   port: number;
   enabled: boolean;
+}
+
+export type LanPrinterConfig = StationPrinterConfig;
+
+export interface DualPrinterConfig {
+  kitchen: StationPrinterConfig;
+  bar: StationPrinterConfig;
 }
 
 export interface DiscoveredPrinter {
@@ -17,31 +26,58 @@ export interface DiscoveredPrinter {
 
 const LOCAL_AGENT_URL = "http://127.0.0.1:8088";
 
-const DEFAULT_LAN_CONFIG: LanPrinterConfig = {
-  ip: "",
-  port: 9100,
-  enabled: true,
+const DEFAULT_STATION_CONFIG: Record<PrinterStation, StationPrinterConfig> = {
+  kitchen: {
+    ip: "",
+    port: 9100,
+    enabled: true,
+  },
+  bar: {
+    ip: "",
+    port: 9100,
+    enabled: false,
+  },
 };
 
-export function getLanPrinterConfig(): LanPrinterConfig {
-  if (typeof window === "undefined") return DEFAULT_LAN_CONFIG;
+export function getStationPrinterConfig(station: PrinterStation): StationPrinterConfig {
+  if (typeof window === "undefined") return { ...DEFAULT_STATION_CONFIG[station] };
   try {
-    const raw = localStorage.getItem("kitchen_lan_printer_config");
+    const key = station === "kitchen" ? "kitchen_lan_printer_config" : "bar_lan_printer_config";
+    const raw = localStorage.getItem(key);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return { ...DEFAULT_LAN_CONFIG, ...parsed };
+      return { ...DEFAULT_STATION_CONFIG[station], ...parsed };
     }
   } catch (e) {}
-  return DEFAULT_LAN_CONFIG;
+  return { ...DEFAULT_STATION_CONFIG[station] };
+}
+
+export function saveStationPrinterConfig(
+  station: PrinterStation,
+  config: Partial<StationPrinterConfig>
+): StationPrinterConfig {
+  const current = getStationPrinterConfig(station);
+  const updated = { ...current, ...config };
+  if (typeof window !== "undefined") {
+    const key = station === "kitchen" ? "kitchen_lan_printer_config" : "bar_lan_printer_config";
+    localStorage.setItem(key, JSON.stringify(updated));
+  }
+  return updated;
+}
+
+export function getDualPrinterConfig(): DualPrinterConfig {
+  return {
+    kitchen: getStationPrinterConfig("kitchen"),
+    bar: getStationPrinterConfig("bar"),
+  };
+}
+
+export function getLanPrinterConfig(): LanPrinterConfig {
+  return getStationPrinterConfig("kitchen");
 }
 
 export function saveLanPrinterConfig(config: Partial<LanPrinterConfig>): LanPrinterConfig {
-  const current = getLanPrinterConfig();
-  const updated = { ...current, ...config };
-  if (typeof window !== "undefined") {
-    localStorage.setItem("kitchen_lan_printer_config", JSON.stringify(updated));
-  }
-  return updated;
+  return saveStationPrinterConfig("kitchen", config);
 }
 
 /**
@@ -94,20 +130,22 @@ export async function discoverLanPrinters(): Promise<DiscoveredPrinter[]> {
 /**
  * Scans LAN for port 9100 devices and saves first detected device if configured IP is missing
  */
-export async function autoDetectAndSaveThermalPrinter(): Promise<DiscoveredPrinter | null> {
+export async function autoDetectAndSaveThermalPrinter(
+  station: PrinterStation = "kitchen"
+): Promise<DiscoveredPrinter | null> {
   try {
     const printers = await discoverLanPrinters();
     if (printers.length === 0) return null;
 
     const selected = printers[0];
-    saveLanPrinterConfig({
+    saveStationPrinterConfig(station, {
       ip: selected.ip,
       port: selected.port,
       enabled: true,
     });
     return selected;
   } catch (e) {
-    console.error("Error auto-detecting LAN printer:", e);
+    console.error(`Error auto-detecting ${station} LAN printer:`, e);
   }
   return null;
 }
@@ -238,42 +276,50 @@ export async function printDirectToLan(
  */
 export async function printTestReceiptToLan(
   ip?: string,
-  port?: number
+  port?: number,
+  stationName: string = "Kitchen"
 ): Promise<{ success: boolean; message: string }> {
-  const config = getLanPrinterConfig();
-  let targetIp = (ip !== undefined ? ip : config.ip).trim();
-  let targetPort = port !== undefined ? port : config.port;
+  let targetIp = (ip !== undefined ? ip : "").trim();
+  let targetPort = port !== undefined ? port : 9100;
 
   if (!targetIp) {
-    const detected = await autoDetectAndSaveThermalPrinter();
+    const isBar = stationName.toLowerCase() === "bar";
+    const cfg = getStationPrinterConfig(isBar ? "bar" : "kitchen");
+    targetIp = cfg.ip.trim();
+    targetPort = cfg.port || 9100;
+  }
+
+  if (!targetIp) {
+    const isBar = stationName.toLowerCase() === "bar";
+    const detected = await autoDetectAndSaveThermalPrinter(isBar ? "bar" : "kitchen");
     if (detected) {
       targetIp = detected.ip;
       targetPort = detected.port;
     } else {
       return {
         success: false,
-        message: "No printer IP set. Please run Auto-Detect to find your thermal printer.",
+        message: `No ${stationName} printer IP set. Please run Auto-Detect to find your thermal printer.`,
       };
     }
   }
 
   try {
-    const escposBytes = buildEscPosTestReceipt(targetIp, targetPort);
+    const escposBytes = buildEscPosTestReceipt(targetIp, targetPort, stationName);
     const ok = await printDirectToLan(escposBytes, targetIp, targetPort);
     if (ok) {
       return {
         success: true,
-        message: `Test receipt sent to printer at ${targetIp}:${targetPort}! Check paper.`,
+        message: `Test receipt sent to ${stationName} printer at ${targetIp}:${targetPort}! Check paper.`,
       };
     }
     return {
       success: false,
-      message: `Failed to print to ${targetIp}:${targetPort}. Please check if printer is powered on and connected to LAN.`,
+      message: `Failed to print to ${stationName} printer at ${targetIp}:${targetPort}. Please check if printer is powered on and connected to LAN.`,
     };
   } catch (e: any) {
     return {
       success: false,
-      message: e.message || "Error printing test receipt",
+      message: e.message || `Error printing ${stationName} test receipt`,
     };
   }
 }

@@ -9,6 +9,7 @@ export interface Restaurant {
   name: string;
   slug?: string;
   address?: string;
+  menuType?: "BAR" | "KITCHEN";
   isActive?: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -20,6 +21,7 @@ export interface User {
   name: string;
   email: string;
   role: string;
+  menuType?: "BAR" | "KITCHEN";
   isActive?: boolean;
   restaurantId: string;
   restaurant?: Restaurant;
@@ -32,6 +34,7 @@ export interface Table {
   id: string;
   restaurantId: string;
   number: string;
+  menuType?: "BAR" | "KITCHEN";
   isActive?: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -50,6 +53,7 @@ export interface Addon {
   restaurantId: string;
   name: string;
   price: number;
+  menuType?: "BAR" | "KITCHEN";
   isActive?: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -64,6 +68,7 @@ export interface MenuItem {
   description?: string;
   price: number;
   imageUrl?: string;
+  menuType?: "BAR" | "KITCHEN";
   isActive?: boolean;
   addons?: Addon[];
   createdAt?: string;
