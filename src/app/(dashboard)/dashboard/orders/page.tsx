@@ -56,6 +56,7 @@ import {
   printStationTicket,
   ReceiptData,
   ReceiptItem,
+  PrintThermalOptions,
 } from "@/utils/thermalReceipt";
 import {
   connectUsbPrinter,
@@ -78,6 +79,59 @@ import {
   PrinterStation,
   DiscoveredPrinter,
 } from "@/utils/lanPrinter";
+
+// Key for persisting printed order IDs across page refreshes and remounts
+const STORAGE_KEY_PRINTED_ORDERS = "kitchen_printed_order_ids";
+
+function getPersistedPrintedOrderIds(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY_PRINTED_ORDERS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return new Set(parsed);
+      }
+    }
+  } catch (e) {
+    // Ignore storage parse errors
+  }
+  return new Set();
+}
+
+function persistPrintedOrderId(orderId: string) {
+  if (typeof window === "undefined" || !orderId) return;
+  try {
+    const current = getPersistedPrintedOrderIds();
+    current.add(orderId);
+    // Keep at most 500 recent IDs to avoid storage bloat
+    const list = Array.from(current).slice(-500);
+    sessionStorage.setItem(STORAGE_KEY_PRINTED_ORDERS, JSON.stringify(list));
+  } catch (e) {
+    // Ignore storage write errors
+  }
+}
+
+// Deduplicate order list by order ID and merge/preserve items if present
+function deduplicateOrders(orderList: Order[]): Order[] {
+  if (!orderList || !Array.isArray(orderList)) return [];
+  const map = new Map<string, Order>();
+  for (const o of orderList) {
+    if (!o || !o.id) continue;
+    if (!map.has(o.id)) {
+      map.set(o.id, o);
+    } else {
+      // Keep whichever entry has items
+      const existing = map.get(o.id)!;
+      const existingItems = existing.items || (existing as any).orderItems || [];
+      const newItems = o.items || (o as any).orderItems || [];
+      if (newItems.length > existingItems.length) {
+        map.set(o.id, o);
+      }
+    }
+  }
+  return Array.from(map.values());
+}
 
 // Dual-tone POS order chime using Web Audio API
 function playOrderChime() {
@@ -144,7 +198,8 @@ export default function OrdersPage() {
 
   // Refs for tracking order lifecycle across polling intervals
   const initialLoadDoneRef = useRef<boolean>(false);
-  const printedOrderIdsRef = useRef<Set<string>>(new Set());
+  const printedOrderIdsRef = useRef<Set<string>>(getPersistedPrintedOrderIds());
+  const inFlightPrintingRef = useRef<Set<string>>(new Set());
   const autoPrintRef = useRef<boolean>(autoPrintEnabled);
   const soundAlertRef = useRef<boolean>(soundAlertEnabled);
 
@@ -428,7 +483,12 @@ export default function OrdersPage() {
 
     // Core receipt printer function
     const handlePrintOrder = useCallback(
-      async (order: Order, itemsToPrint?: OrderItem[], station?: PrinterStation) => {
+      async (
+        order: Order,
+        itemsToPrint?: OrderItem[],
+        station?: PrinterStation,
+        options?: PrintThermalOptions
+      ) => {
         let finalItems = itemsToPrint;
         if (!finalItems || finalItems.length === 0) {
           const existing = order.items || (order as any).orderItems;
@@ -492,7 +552,12 @@ export default function OrdersPage() {
           notes: order.notes,
         };
 
-        return await printThermalReceipt(receiptData, station ? { station } : undefined);
+        const printOptions: PrintThermalOptions = {
+          ...(options || {}),
+          ...(station ? { station } : {}),
+        };
+
+        return await printThermalReceipt(receiptData, printOptions);
       },
       [getTableNumber]
     );
@@ -500,22 +565,36 @@ export default function OrdersPage() {
     // Check incoming orders for new ones to automatically print & sound alert
     const checkAndAutoPrintNewOrders = useCallback(
       async (incomingOrders: Order[]) => {
+        const uniqueOrders = deduplicateOrders(incomingOrders);
+
         if (!initialLoadDoneRef.current) {
-          // Initial load: record existing orders so past orders are never auto-printed
-          incomingOrders.forEach((o) => printedOrderIdsRef.current.add(o.id));
+          // Initial load: mark existing orders as already printed so past orders are never auto-printed
+          uniqueOrders.forEach((o) => {
+            printedOrderIdsRef.current.add(o.id);
+            persistPrintedOrderId(o.id);
+          });
           initialLoadDoneRef.current = true;
           return;
         }
 
-        // Detect orders that haven't been printed yet
-        const brandNewOrders = incomingOrders.filter(
-          (o) => !printedOrderIdsRef.current.has(o.id)
-        );
+        // Find truly new orders that are neither printed nor currently in-flight
+        const brandNewOrders: Order[] = [];
+        for (const order of uniqueOrders) {
+          if (
+            !printedOrderIdsRef.current.has(order.id) &&
+            !inFlightPrintingRef.current.has(order.id)
+          ) {
+            // CRITICAL: Immediately lock and register this ID so subsequent ticks or loops never re-trigger it!
+            printedOrderIdsRef.current.add(order.id);
+            inFlightPrintingRef.current.add(order.id);
+            persistPrintedOrderId(order.id);
+            brandNewOrders.push(order);
+          }
+        }
 
         if (brandNewOrders.length === 0) return;
 
         for (const newOrder of brandNewOrders) {
-          printedOrderIdsRef.current.add(newOrder.id);
           setLatestPrintedOrderId(newOrder.id);
 
           // Sound chime for the kitchen staff
@@ -523,9 +602,17 @@ export default function OrdersPage() {
             playOrderChime();
           }
 
-          // Automatic 80mm thermal receipt printing
+          // Automatic 80mm thermal receipt printing (silent: background auto-print never spawns window.print dialogs)
           if (autoPrintRef.current) {
-            await handlePrintOrder(newOrder);
+            try {
+              await handlePrintOrder(newOrder, undefined, undefined, { silent: true });
+            } catch (err) {
+              console.error("Auto print failed for order:", newOrder.id, err);
+            } finally {
+              inFlightPrintingRef.current.delete(newOrder.id);
+            }
+          } else {
+            inFlightPrintingRef.current.delete(newOrder.id);
           }
         }
       },
@@ -552,11 +639,15 @@ export default function OrdersPage() {
         }
 
         if (ordersRes.status === "fulfilled" && (ordersRes.value as any)?.data) {
-          const fetchedOrders: Order[] = Array.isArray((ordersRes.value as any).data)
+          const rawOrders: Order[] = Array.isArray((ordersRes.value as any).data)
             ? (ordersRes.value as any).data
             : [];
+          const fetchedOrders = deduplicateOrders(rawOrders);
           setOrders(fetchedOrders);
-          fetchedOrders.forEach((o) => printedOrderIdsRef.current.add(o.id));
+          fetchedOrders.forEach((o) => {
+            printedOrderIdsRef.current.add(o.id);
+            persistPrintedOrderId(o.id);
+          });
           initialLoadDoneRef.current = true;
         }
       } catch (err: any) {
@@ -583,7 +674,7 @@ export default function OrdersPage() {
         try {
           const ordersRes: any = await APIGetOrdersByRestaurant(restaurantId);
           if (ordersRes?.data && Array.isArray(ordersRes.data)) {
-            const fetchedOrders: Order[] = ordersRes.data;
+            const fetchedOrders = deduplicateOrders(ordersRes.data);
             setOrders(fetchedOrders);
             checkAndAutoPrintNewOrders(fetchedOrders);
           }

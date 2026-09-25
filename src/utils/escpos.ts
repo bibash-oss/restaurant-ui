@@ -75,18 +75,14 @@ export function buildEscPosReceipt(data: ReceiptData): Uint8Array {
   writeLine(`DATE:    ${dateStr}`);
   writeLine("-".repeat(COLS_80MM));
 
-  // 8. Itemized Header (48 cols: Qty 5 | Item 25 | Price 9 | Total 9)
-  const colQty = 5;
-  const colName = 25;
-  const colPrice = 9;
-  const colTotal = 9;
+  // 8. Itemized Header (48 cols: Item on left 40 cols | Qty on right 8 cols)
+  const colName = 40;
+  const colQty = 8;
 
   writeRaw([0x1b, 0x45, 0x01]); // Bold ON
   writeLine(
-    padRight("QTY", colQty) +
-      padRight("ITEM", colName) +
-      padLeft("PRICE", colPrice) +
-      padLeft("TOTAL", colTotal)
+    padRight("ITEM", colName) +
+      padLeft("QTY", colQty)
   );
   writeRaw([0x1b, 0x45, 0x00]); // Bold OFF
   writeLine("-".repeat(COLS_80MM));
@@ -94,8 +90,6 @@ export function buildEscPosReceipt(data: ReceiptData): Uint8Array {
   // 9. Items
   for (const item of data.items) {
     const qtyStr = `${item.quantity}x`;
-    const priceStr = `$${item.price.toFixed(2)}`;
-    const totalStr = `$${(item.quantity * item.price).toFixed(2)}`;
 
     // Handle multi-line item names if needed
     let nameStr = item.name;
@@ -103,18 +97,17 @@ export function buildEscPosReceipt(data: ReceiptData): Uint8Array {
       nameStr = nameStr.slice(0, colName - 1);
     }
 
+    writeRaw([0x1b, 0x45, 0x01]); // Bold ON
     writeLine(
-      padRight(qtyStr, colQty) +
-        padRight(nameStr, colName) +
-        padLeft(priceStr, colPrice) +
-        padLeft(totalStr, colTotal)
+      padRight(nameStr, colName) +
+        padLeft(qtyStr, colQty)
     );
+    writeRaw([0x1b, 0x45, 0x00]); // Bold OFF
 
     if (item.addons && item.addons.length > 0) {
       for (const addon of item.addons) {
         const qtyPrefix = addon.quantity && addon.quantity > 1 ? `${addon.quantity}x ` : "";
-        const priceSuffix = addon.price ? ` ($${(addon.price * (addon.quantity || 1)).toFixed(2)})` : "";
-        writeLine(`   + ${qtyPrefix}${addon.name}${priceSuffix}`);
+        writeLine(`   + ${qtyPrefix}${addon.name}`);
       }
     }
   }
@@ -128,16 +121,6 @@ export function buildEscPosReceipt(data: ReceiptData): Uint8Array {
   }
 
   writeLine("-".repeat(COLS_80MM));
-
-  // 10. Total
-  writeRaw([0x1b, 0x45, 0x01]); // Bold ON
-  writeRaw([0x1d, 0x21, 0x01]); // Double height
-  const totalLabel = "TOTAL AMOUNT:";
-  const totalVal = `$${data.totalAmount.toFixed(2)}`;
-  const spaceCount = Math.max(1, COLS_80MM - totalLabel.length - totalVal.length);
-  writeLine(totalLabel + " ".repeat(spaceCount) + totalVal);
-  writeRaw([0x1d, 0x21, 0x00]); // Normal size
-  writeRaw([0x1b, 0x45, 0x00]); // Bold OFF
 
   // 11. Footer
   writeRaw([0x1b, 0x61, 0x01]); // Center

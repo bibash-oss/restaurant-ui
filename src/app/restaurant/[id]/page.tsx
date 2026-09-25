@@ -39,10 +39,13 @@ import {
   IconAlertCircle,
   IconX,
   IconArmchair,
+  IconCreditCard,
+  IconBrandStripe,
 } from "@tabler/icons-react";
 import { APIGetCategoriesByRestaurant, APIGetMenuItemsByRestaurant } from "@/api/menu";
 import { APIGetTablesByRestaurant } from "@/api/tables";
 import { APICreateOrder } from "@/api/orders";
+import { APICreateCheckoutSession } from "@/api/payment";
 import { MenuItem, MenuCategory, Table as TableType, Restaurant, Addon } from "@/types";
 
 export interface CartAddonSelection {
@@ -95,6 +98,38 @@ export default function RestaurantMenuPage() {
   // Drawers & Modals
   const [cartOpened, { open: openCart, close: closeCart }] = useDisclosure(false);
   const [tableModalOpened, { open: openTableModal, close: closeTableModal }] = useDisclosure(false);
+
+  // Restore cart from localStorage on mount
+  useEffect(() => {
+    if (typeof window !== "undefined" && restaurantId) {
+      try {
+        const savedCart = localStorage.getItem(`dining_cart_${restaurantId}`);
+        if (savedCart) {
+          const parsed = JSON.parse(savedCart);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setCart(parsed);
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to load saved cart", e);
+      }
+    }
+  }, [restaurantId]);
+
+  // Sync cart to localStorage whenever it changes
+  useEffect(() => {
+    if (typeof window !== "undefined" && restaurantId) {
+      try {
+        if (cart.length > 0) {
+          localStorage.setItem(`dining_cart_${restaurantId}`, JSON.stringify(cart));
+        } else {
+          localStorage.removeItem(`dining_cart_${restaurantId}`);
+        }
+      } catch (e) {
+        console.warn("Failed to sync cart to storage", e);
+      }
+    }
+  }, [cart, restaurantId]);
 
   // Load menu & table data
   useEffect(() => {
@@ -309,26 +344,34 @@ export default function RestaurantMenuPage() {
               addonId: ad.addonId,
               quantity: ad.quantity,
             }));
+          } else {
+            itemPayload.addons = [];
           }
           return itemPayload;
         }),
       };
 
-      const res: any = await APICreateOrder(payload);
-      const createdOrder = res?.data;
-      const createdId = createdOrder?.id || res?.data?.id || "Order Confirmed";
+      // Create Stripe Checkout Session on the backend
+      const res: any = await APICreateCheckoutSession(payload);
+      const checkoutData = res?.data || res;
+      const checkoutUrl = checkoutData?.checkoutUrl;
 
-      setLastPlacedOrder({
-        tableName: createdOrder?.table?.number || selectedTable?.number || "Table",
-        totalAmount: Number(createdOrder?.totalAmount) || Number(cartTotalPrice) || 0,
-      });
-      setOrderSuccess(createdId);
-      setCart([]);
-      setOrderNotes("");
+      if (checkoutUrl) {
+        // Save restaurant ID & table ID so cancel or back navigation returns seamlessly
+        if (typeof window !== "undefined") {
+          localStorage.setItem("last_checkout_restaurant_id", restaurantId);
+          localStorage.setItem(`dining_table_${restaurantId}`, selectedTableId);
+        }
+        // Redirect customer directly to Stripe hosted checkout
+        window.location.href = checkoutUrl;
+        return;
+      }
+
+      throw new Error(res?.error || res?.message || "Failed to initialize payment session with Stripe.");
     } catch (err: any) {
-      console.error("Failed to place order:", err);
+      console.error("Failed to initiate Stripe checkout:", err);
       setOrderError(
-        typeof err === "string" ? err : err?.message || "Failed to submit order. Please try again."
+        typeof err === "string" ? err : err?.message || err?.error || "Failed to connect to payment gateway. Please try again."
       );
     } finally {
       setIsPlacingOrder(false);
@@ -807,13 +850,17 @@ export default function RestaurantMenuPage() {
               </Group>
 
               <Button
-                color="orange"
-                style={{ backgroundColor: "var(--color-primary)" }}
+                color="indigo"
+                style={{
+                  backgroundColor: "#635BFF",
+                  boxShadow: "0 2px 10px rgba(99, 91, 255, 0.35)",
+                }}
                 radius="xl"
                 size="sm"
+                leftSection={<IconCreditCard size={16} />}
                 onClick={openCart}
               >
-                Review Order →
+                Review & Pay with Stripe →
               </Button>
             </Group>
           </Paper>
@@ -1034,13 +1081,26 @@ export default function RestaurantMenuPage() {
               <Button
                 fullWidth
                 size="lg"
-                color="orange"
-                style={{ backgroundColor: "var(--color-primary)" }}
+                color="indigo"
+                style={{
+                  backgroundColor: "#635BFF",
+                  boxShadow: "0 4px 16px rgba(99, 91, 255, 0.4)",
+                  height: 52,
+                }}
+                leftSection={<IconCreditCard size={20} />}
                 loading={isPlacingOrder}
+                loaderProps={{ type: "dots" }}
                 onClick={handlePlaceOrder}
               >
-                Send Order to Kitchen
+                {isPlacingOrder ? "Connecting to Stripe..." : `Pay with Stripe • $${cartTotalPrice.toFixed(2)}`}
               </Button>
+
+              <Group justify="center" gap={6} mt="xs">
+                <IconBrandStripe size={18} color="#635BFF" />
+                <Text size="11px" c="dimmed">
+                  Guaranteed safe & secure checkout powered by Stripe (AUD)
+                </Text>
+              </Group>
             </Box>
           )}
         </Stack>

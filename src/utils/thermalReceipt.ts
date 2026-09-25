@@ -49,27 +49,23 @@ export function generateReceiptHtml(data: ReceiptData): string {
 
   const itemsHtml = data.items
     .map((item) => {
-      const lineTotal = (item.quantity * item.price).toFixed(2);
-      const unitPrice = item.price.toFixed(2);
       const addonsHtml =
         item.addons && item.addons.length > 0
           ? `<div class="addon-line">${item.addons
               .map(
                 (a) =>
-                  `+ ${a.quantity && a.quantity > 1 ? `${a.quantity}x ` : ""}${escapeHtml(a.name)} ($${(a.price * (a.quantity || 1)).toFixed(2)})`
+                  `+ ${a.quantity && a.quantity > 1 ? `${a.quantity}x ` : ""}${escapeHtml(a.name)}`
               )
               .join("<br/>")}</div>`
           : "";
 
       return `
         <tr>
-          <td class="col-qty">${item.quantity}x</td>
           <td class="col-name">
             <span class="item-name">${escapeHtml(item.name)}</span>
             ${addonsHtml}
           </td>
-          <td class="col-price">$${unitPrice}</td>
-          <td class="col-total">$${lineTotal}</td>
+          <td class="col-qty text-right">${item.quantity}x</td>
         </tr>
       `;
     })
@@ -176,28 +172,14 @@ export function generateReceiptHtml(data: ReceiptData): string {
             vertical-align: top;
           }
 
-          .col-qty { width: 14%; text-align: left; font-weight: bold; }
-          .col-name { width: 48%; text-align: left; word-break: break-word; }
-          .col-price { width: 19%; text-align: right; }
-          .col-total { width: 19%; text-align: right; font-weight: bold; }
+          .col-name { width: 75%; text-align: left; word-break: break-word; }
+          .col-qty { width: 25%; text-align: right; font-weight: bold; font-size: 13px; }
 
-          .item-name { font-weight: bold; }
+          .item-name { font-weight: bold; font-size: 13px; }
           .addon-line {
             font-size: 10px;
             color: #333333;
             margin-top: 1px;
-          }
-
-          .totals-section {
-            margin-top: 4px;
-          }
-          .total-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: baseline;
-            font-size: 15px;
-            font-weight: bold;
-            padding: 4px 0;
           }
 
           .receipt-footer {
@@ -245,25 +227,14 @@ export function generateReceiptHtml(data: ReceiptData): string {
         <table class="receipt-table">
           <thead>
             <tr>
-              <th class="col-qty">QTY</th>
               <th class="col-name">ITEM</th>
-              <th class="col-price text-right">PRICE</th>
-              <th class="col-total text-right">TOTAL</th>
+              <th class="col-qty text-right">QTY</th>
             </tr>
           </thead>
           <tbody>
             ${itemsHtml}
           </tbody>
         </table>
-
-        <div class="dashed-divider"></div>
-
-        <div class="totals-section">
-          <div class="total-row">
-            <span>TOTAL AMOUNT:</span>
-            <span>$${data.totalAmount.toFixed(2)}</span>
-          </div>
-        </div>
 
         ${
           data.notes
@@ -302,6 +273,7 @@ import {
 
 export interface PrintThermalOptions {
   station?: PrinterStation;
+  silent?: boolean;
 }
 
 function calculateItemsTotal(items: ReceiptItem[]): number {
@@ -372,43 +344,60 @@ export async function printThermalReceipt(
 
     // Case A: Both printers configured
     if (isKitchenConfigured && isBarConfigured) {
-      let printedAny = false;
+      const samePrinter =
+        kitchen.ip.trim() === bar.ip.trim() && kitchen.port === bar.port;
 
-      // Print Food ticket to Kitchen printer
-      if (kitchenItems.length > 0) {
-        const kitchenData: ReceiptData = {
-          ...data,
-          items: kitchenItems,
-          totalAmount: calculateItemsTotal(kitchenItems),
-          stationTitle: "KITCHEN ORDER TICKET (FOOD)",
-        };
+      // If both Kitchen & Bar point to the exact same printer, print ONE single combined ticket!
+      if (samePrinter && (kitchenItems.length > 0 || barItems.length > 0)) {
         try {
-          const escpos = buildEscPosReceipt(kitchenData);
+          const combinedTicket: ReceiptData = {
+            ...data,
+            stationTitle: "KITCHEN & BAR ORDER TICKET",
+          };
+          const escpos = buildEscPosReceipt(combinedTicket);
           const ok = await printDirectToLan(escpos, kitchen.ip, kitchen.port);
-          if (ok) printedAny = true;
+          if (ok) return true;
         } catch (e) {
-          console.warn("Failed printing to Kitchen printer:", e);
+          console.warn("Combined LAN print failed:", e);
         }
-      }
+      } else {
+        // Distinct physical printers: send food to kitchen printer, drinks to bar printer
+        let printedAny = false;
 
-      // Print Drink ticket to Bar printer
-      if (barItems.length > 0) {
-        const barData: ReceiptData = {
-          ...data,
-          items: barItems,
-          totalAmount: calculateItemsTotal(barItems),
-          stationTitle: "BAR ORDER TICKET (DRINKS)",
-        };
-        try {
-          const escpos = buildEscPosReceipt(barData);
-          const ok = await printDirectToLan(escpos, bar.ip, bar.port);
-          if (ok) printedAny = true;
-        } catch (e) {
-          console.warn("Failed printing to Bar printer:", e);
+        if (kitchenItems.length > 0) {
+          const kitchenData: ReceiptData = {
+            ...data,
+            items: kitchenItems,
+            totalAmount: calculateItemsTotal(kitchenItems),
+            stationTitle: "KITCHEN ORDER TICKET (FOOD)",
+          };
+          try {
+            const escpos = buildEscPosReceipt(kitchenData);
+            const ok = await printDirectToLan(escpos, kitchen.ip, kitchen.port);
+            if (ok) printedAny = true;
+          } catch (e) {
+            console.warn("Failed printing to Kitchen printer:", e);
+          }
         }
-      }
 
-      if (printedAny) return true;
+        if (barItems.length > 0) {
+          const barData: ReceiptData = {
+            ...data,
+            items: barItems,
+            totalAmount: calculateItemsTotal(barItems),
+            stationTitle: "BAR ORDER TICKET (DRINKS)",
+          };
+          try {
+            const escpos = buildEscPosReceipt(barData);
+            const ok = await printDirectToLan(escpos, bar.ip, bar.port);
+            if (ok) printedAny = true;
+          } catch (e) {
+            console.warn("Failed printing to Bar printer:", e);
+          }
+        }
+
+        if (printedAny) return true;
+      }
     }
 
     // Case B: Only Kitchen printer is configured
@@ -456,7 +445,13 @@ export async function printThermalReceipt(
     }
   }
 
-  // 4. Fallback: Standard browser print dialog
+  // 4. Fallback: Standard browser print dialog (ONLY for manual clicks, NEVER during silent auto-print!)
+  if (options?.silent) {
+    console.warn(
+      "Silent background auto-print failed to reach thermal printer; skipping browser dialog popup."
+    );
+    return false;
+  }
   const existingIframe = document.getElementById("thermal-receipt-print-frame");
   if (existingIframe) {
     existingIframe.remove();
