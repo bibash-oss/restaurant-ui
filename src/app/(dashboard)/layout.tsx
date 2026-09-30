@@ -68,11 +68,6 @@ export default function DashboardLayout({
       icon: <IconToolsKitchen2 size={20} stroke={1.5} />,
     },
     {
-      label: "Tables",
-      href: "/dashboard/tables",
-      icon: <IconArmchair size={20} stroke={1.5} />,
-    },
-    {
       label: "Add-ons",
       href: "/dashboard/addons",
       icon: <IconPlus size={20} stroke={1.5} />,
@@ -113,20 +108,32 @@ export default function DashboardLayout({
           <Group>
             <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" />
             <Group gap="xs">
-              <Box
+              <Avatar
+                src={restaurant?.imgUrl || user?.restaurant?.imgUrl}
+                alt={restaurant?.name || "Restaurant Logo"}
+                radius="md"
+                size={36}
+                imageProps={{ style: { objectFit: "contain" } }}
                 style={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: "8px",
-                  backgroundColor: "var(--color-primary-light)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "var(--color-primary)",
+                  border: "1px solid var(--color-border)",
+                  backgroundColor: "#ffffff",
                 }}
               >
-                <IconChefHat size={22} />
-              </Box>
+                <Box
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    borderRadius: "8px",
+                    backgroundColor: "var(--color-primary-light)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "var(--color-primary)",
+                  }}
+                >
+                  <IconChefHat size={20} />
+                </Box>
+              </Avatar>
               <Box>
                 <Title order={4} style={{ color: "var(--color-text)", lineHeight: 1.2 }}>
                   {restaurant?.name || "Kitchen Portal"}

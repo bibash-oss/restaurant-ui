@@ -49,8 +49,7 @@ import {
   APIUpdateOrderStatus,
   APIGetItemsByOrder,
 } from "@/api/orders";
-import { APIGetTablesByRestaurant } from "@/api/tables";
-import { Order, OrderItem, OrderStatus, Table as TableType } from "@/types";
+import { Order, OrderItem, OrderStatus } from "@/types";
 import {
   printThermalReceipt,
   printStationTicket,
@@ -171,7 +170,6 @@ function playOrderChime() {
 export default function OrdersPage() {
   const { user, restaurantId } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
-  const [tables, setTables] = useState<TableType[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [error, setError] = useState<string | null>(null);
@@ -457,12 +455,6 @@ export default function OrdersPage() {
     });
   };
 
-    // Synchronize state to refs so callbacks never re-create or cause re-render loops
-    const tablesRef = useRef<TableType[]>([]);
-    useEffect(() => {
-      tablesRef.current = tables;
-    }, [tables]);
-
     const userRef = useRef(user);
     useEffect(() => {
       userRef.current = user;
@@ -475,10 +467,9 @@ export default function OrdersPage() {
     const [isPrintingModal, setIsPrintingModal] = useState<boolean>(false);
     const [modalOpened, { open: openModal, close: closeModal }] = useDisclosure(false);
 
-    const getTableNumber = useCallback((tableId: string, orderTable?: TableType) => {
-      if (orderTable?.number) return orderTable.number;
-      const found = tablesRef.current.find((t) => t.id === tableId);
-      return found ? found.number : "Unknown Table";
+    const getTableNumber = useCallback((order?: Order | any) => {
+      if (typeof order === "string") return order;
+      return order?.tableName || "N/A";
     }, []);
 
     // Core receipt printer function
@@ -506,7 +497,7 @@ export default function OrdersPage() {
           }
         }
 
-        const tableName = getTableNumber(order.tableId, order.table);
+        const tableName = order.tableName || "Unknown Table";
         const receiptItems: ReceiptItem[] = (finalItems || []).map((it) => {
           const rawAddons = it.addons || it.orderItemAddons || (it as any).OrderItemAddons || [];
           const mappedAddons = rawAddons.map((ad: any) => ({
@@ -625,22 +616,10 @@ export default function OrdersPage() {
       setIsLoading(true);
       setError(null);
       try {
-        const [ordersRes, tablesRes] = await Promise.allSettled([
-          APIGetOrdersByRestaurant(restaurantId),
-          APIGetTablesByRestaurant(restaurantId),
-        ]);
-
-        if (tablesRes.status === "fulfilled" && (tablesRes.value as any)?.data) {
-          const fetchedTables = Array.isArray((tablesRes.value as any).data)
-            ? (tablesRes.value as any).data
-            : [];
-          setTables(fetchedTables);
-          tablesRef.current = fetchedTables;
-        }
-
-        if (ordersRes.status === "fulfilled" && (ordersRes.value as any)?.data) {
-          const rawOrders: Order[] = Array.isArray((ordersRes.value as any).data)
-            ? (ordersRes.value as any).data
+        const ordersRes: any = await APIGetOrdersByRestaurant(restaurantId);
+        if (ordersRes?.data) {
+          const rawOrders: Order[] = Array.isArray(ordersRes.data)
+            ? ordersRes.data
             : [];
           const fetchedOrders = deduplicateOrders(rawOrders);
           setOrders(fetchedOrders);
@@ -1019,7 +998,7 @@ export default function OrdersPage() {
                       </Table.Td>
                       <Table.Td>
                         <Badge variant="outline" color="dark">
-                          {getTableNumber(order.tableId, order.table)}
+                          {order.tableName || "N/A"}
                         </Badge>
                       </Table.Td>
                       <Table.Td>
@@ -1105,7 +1084,9 @@ export default function OrdersPage() {
                   <Text size="xs" c="dimmed">
                     TABLE
                   </Text>
-                  <Text fw={600}>{getTableNumber(selectedOrder.tableId, selectedOrder.table)}</Text>
+                  <Text fw={600}>
+                    {selectedOrder.tableName || "N/A"}
+                  </Text>
                 </Box>
                 <Box>
                   <Text size="xs" c="dimmed">

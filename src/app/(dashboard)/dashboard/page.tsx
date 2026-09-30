@@ -18,7 +18,6 @@ import {
 import {
   IconReceipt,
   IconToolsKitchen2,
-  IconArmchair,
   IconPlus,
   IconArrowRight,
   IconRefresh,
@@ -30,16 +29,14 @@ import { Loading } from "@/components/common/Loading";
 import { EmptyState } from "@/components/common/EmptyState";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { APIGetOrdersByRestaurant, APIUpdateOrderStatus } from "@/api/orders";
-import { APIGetTablesByRestaurant } from "@/api/tables";
 import { APIGetMenuItemsByRestaurant } from "@/api/menu";
 import { APIGetAddonsByRestaurant } from "@/api/addons";
-import { Order, Table as TableType, MenuItem, Addon, OrderStatus } from "@/types";
+import { Order, MenuItem, Addon, OrderStatus } from "@/types";
 
 export default function DashboardOverviewPage() {
   const { restaurant, restaurantId } = useAuth();
 
   const [orders, setOrders] = useState<Order[]>([]);
-  const [tables, setTables] = useState<TableType[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [addons, setAddons] = useState<Addon[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -51,18 +48,14 @@ export default function DashboardOverviewPage() {
     setIsLoading(true);
     setError(null);
     try {
-      const [ordersRes, tablesRes, menuRes, addonsRes] = await Promise.allSettled([
+      const [ordersRes, menuRes, addonsRes] = await Promise.allSettled([
         APIGetOrdersByRestaurant(restaurantId),
-        APIGetTablesByRestaurant(restaurantId),
         APIGetMenuItemsByRestaurant(restaurantId),
         APIGetAddonsByRestaurant(restaurantId),
       ]);
 
       if (ordersRes.status === "fulfilled" && (ordersRes.value as any)?.data) {
         setOrders(Array.isArray((ordersRes.value as any).data) ? (ordersRes.value as any).data : []);
-      }
-      if (tablesRes.status === "fulfilled" && (tablesRes.value as any)?.data) {
-        setTables(Array.isArray((tablesRes.value as any).data) ? (tablesRes.value as any).data : []);
       }
       if (menuRes.status === "fulfilled" && (menuRes.value as any)?.data) {
         setMenuItems(Array.isArray((menuRes.value as any).data) ? (menuRes.value as any).data : []);
@@ -108,14 +101,6 @@ export default function DashboardOverviewPage() {
       color: "var(--color-primary)",
       bgColor: "var(--color-primary-light)",
       link: "/dashboard/orders",
-    },
-    {
-      title: "Tables",
-      value: tables.length,
-      icon: <IconArmchair size={28} />,
-      color: "var(--color-secondary)",
-      bgColor: "var(--color-surface-hover)",
-      link: "/dashboard/tables",
     },
     {
       title: "Menu Items",
@@ -269,10 +254,7 @@ export default function DashboardOverviewPage() {
               </Table.Thead>
               <Table.Tbody>
                 {orders.slice(0, 5).map((order) => {
-                  const tableNumber =
-                    order.table?.number ||
-                    tables.find((t) => t.id === order.tableId)?.number ||
-                    "Table";
+                  const tableNumber = order.tableName || "Table";
 
                   return (
                     <Table.Tr key={order.id}>

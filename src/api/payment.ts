@@ -13,7 +13,7 @@ export interface CheckoutItemPayload {
 
 export interface CreateCheckoutPayload {
   restaurantId: string;
-  tableId: string;
+  tableName: string;
   notes?: string;
   items: CheckoutItemPayload[];
 }
@@ -31,7 +31,7 @@ export interface PaymentSessionResponse {
   order?: {
     id: string;
     restaurantId: string;
-    tableId: string;
+    tableName?: string;
     status: string;
     paymentStatus?: string;
     totalAmount: number;

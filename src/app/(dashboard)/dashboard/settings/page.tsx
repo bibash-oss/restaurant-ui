@@ -14,6 +14,7 @@ import {
   Button,
   Paper,
   Flex,
+  Avatar,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
@@ -25,6 +26,9 @@ import {
   IconDeviceMobile,
   IconPrinter,
   IconWifi,
+  IconUpload,
+  IconTrash,
+  IconPhoto,
 } from "@tabler/icons-react";
 import { QRCodeCanvas } from "qrcode.react";
 import { useAuth } from "@/features/auth/context/AuthContext";
@@ -70,27 +74,285 @@ export default function SettingsPage() {
     return rawQrUrl;
   }, [rawQrUrl, useNetworkIp, isLocalhost, networkIp]);
 
-  const handleDownload = () => {
+  const restaurantTitle = restaurant?.name || user?.restaurant?.name || "Restaurant Menu";
+  const restaurantInitial = (restaurantTitle || "R").trim().charAt(0).toUpperCase();
+
+  // Check restaurant/user profile logo or localStorage uploaded logo
+  const defaultLogo =
+    restaurant?.imgUrl ||
+    user?.restaurant?.imgUrl ||
+    "";
+  const [customLogoUrl, setCustomLogoUrl] = React.useState<string>("");
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  React.useEffect(() => {
+    if (typeof window !== "undefined" && restaurantId) {
+      const saved = localStorage.getItem(`restaurant_qr_custom_logo_${restaurantId}`);
+      if (saved) {
+        setCustomLogoUrl(saved);
+      }
+    }
+  }, [restaurantId]);
+
+  const activeLogo = customLogoUrl || defaultLogo || "";
+
+  // Fallback initial badge SVG when no logo image is available
+  const firstLetterBadgeSrc = React.useMemo(() => {
+    if (!restaurantTitle) return undefined;
+    const svg = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+        <defs>
+          <linearGradient id="badgeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#f97316"/>
+            <stop offset="100%" stop-color="#ea580c"/>
+          </linearGradient>
+        </defs>
+        <rect width="100" height="100" rx="26" fill="url(#badgeGrad)"/>
+        <rect x="5" y="5" width="90" height="90" rx="22" fill="none" stroke="#ffffff" stroke-width="3" stroke-opacity="0.3"/>
+        <text x="50" y="65" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="900" font-size="44" fill="#ffffff">${restaurantInitial}</text>
+      </svg>
+    `.trim();
+    return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+  }, [restaurantTitle, restaurantInitial]);
+
+  // Center QR image: logo if available, else first letter
+  const qrCenterImageSrc = React.useMemo(() => {
+    if (!activeLogo) return firstLetterBadgeSrc;
+    if (activeLogo.startsWith("data:") || activeLogo.startsWith("blob:")) {
+      return activeLogo;
+    }
+    // Remote URLs (e.g. storage.googleapis.com, external uploads) must be proxied to avoid CORS blocking when rendering on canvas
+    return `/api/proxy-image?url=${encodeURIComponent(activeLogo)}`;
+  }, [activeLogo, firstLetterBadgeSrc]);
+
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result as string;
+      if (dataUrl) {
+        setCustomLogoUrl(dataUrl);
+        if (restaurantId) {
+          localStorage.setItem(`restaurant_qr_custom_logo_${restaurantId}`, dataUrl);
+        }
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemoveCustomLogo = () => {
+    setCustomLogoUrl("");
+    if (restaurantId) {
+      localStorage.removeItem(`restaurant_qr_custom_logo_${restaurantId}`);
+    }
+  };
+
+  const handleDownload = (includeBranding: boolean = true) => {
     const canvas = document.getElementById("restaurant-qr-canvas") as HTMLCanvasElement | null;
     if (!canvas) return;
 
-    const safeName = (restaurant?.name || "restaurant")
+    const safeName = (restaurantTitle || "restaurant")
       .toLowerCase()
       .trim()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "") || "restaurant";
-    const fileName = `${safeName}-menu-qr.png`;
 
-    const pngUrl = canvas.toDataURL("image/png");
-    const downloadLink = document.createElement("a");
-    downloadLink.download = fileName;
-    downloadLink.href = pngUrl;
-    document.body.appendChild(downloadLink);
-    downloadLink.click();
-    document.body.removeChild(downloadLink);
+    const triggerDownload = (url: string, name: string) => {
+      const downloadLink = document.createElement("a");
+      downloadLink.download = name;
+      downloadLink.href = url;
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      document.body.removeChild(downloadLink);
 
-    setDownloadedFileName(fileName);
-    setTimeout(() => setDownloadedFileName(null), 4000);
+      setDownloadedFileName(name);
+      setTimeout(() => setDownloadedFileName(null), 4000);
+    };
+
+    const drawRoundRect = (
+      c: CanvasRenderingContext2D,
+      x: number,
+      y: number,
+      w: number,
+      h: number,
+      r: number
+    ) => {
+      c.beginPath();
+      c.moveTo(x + r, y);
+      c.lineTo(x + w - r, y);
+      c.quadraticCurveTo(x + w, y, x + w, y + r);
+      c.lineTo(x + w, y + h - r);
+      c.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      c.lineTo(x + r, y + h);
+      c.quadraticCurveTo(x, y + h, x, y + h - r);
+      c.lineTo(x, y + r);
+      c.quadraticCurveTo(x, y, x + r, y);
+      c.closePath();
+    };
+
+    const drawCenterLogoToContext = (
+      c: CanvasRenderingContext2D,
+      cx: number,
+      cy: number,
+      size: number,
+      onDone: () => void
+    ) => {
+      if (!qrCenterImageSrc) {
+        onDone();
+        return;
+      }
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        // Draw white rounded background behind logo
+        c.fillStyle = "#ffffff";
+        c.shadowColor = "rgba(0, 0, 0, 0.15)";
+        c.shadowBlur = Math.round(size * 0.12);
+        drawRoundRect(c, cx - 4, cy - 4, size + 8, size + 8, Math.round(size * 0.2));
+        c.fill();
+        c.shadowColor = "transparent";
+        c.shadowBlur = 0;
+
+        c.save();
+        drawRoundRect(c, cx, cy, size, size, Math.round(size * 0.16));
+        c.clip();
+        c.drawImage(img, cx, cy, size, size);
+        c.restore();
+        onDone();
+      };
+      img.onerror = () => {
+        onDone();
+      };
+      img.src = qrCenterImageSrc;
+    };
+
+    if (!includeBranding) {
+      const standaloneCanvas = document.createElement("canvas");
+      standaloneCanvas.width = 512;
+      standaloneCanvas.height = 512;
+      const sCtx = standaloneCanvas.getContext("2d");
+      if (!sCtx) {
+        triggerDownload(canvas.toDataURL("image/png"), `${safeName}-qr-only.png`);
+        return;
+      }
+      sCtx.drawImage(canvas, 0, 0, 512, 512);
+
+      const logoSize = 110;
+      const logoPos = (512 - logoSize) / 2;
+      drawCenterLogoToContext(sCtx, logoPos, logoPos, logoSize, () => {
+        try {
+          triggerDownload(standaloneCanvas.toDataURL("image/png"), `${safeName}-qr-only.png`);
+        } catch {
+          triggerDownload(canvas.toDataURL("image/png"), `${safeName}-qr-only.png`);
+        }
+      });
+      return;
+    }
+
+    // High quality branded card with Restaurant Name for tables and counters
+    const exportCanvas = document.createElement("canvas");
+    const width = 640;
+    const height = 820;
+    exportCanvas.width = width;
+    exportCanvas.height = height;
+    const ctx = exportCanvas.getContext("2d");
+    if (!ctx) {
+      triggerDownload(canvas.toDataURL("image/png"), `${safeName}-menu-qr.png`);
+      return;
+    }
+
+    // White background
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+
+    // Subtle outer border
+    ctx.strokeStyle = "#e9ecef";
+    ctx.lineWidth = 4;
+    drawRoundRect(ctx, 20, 20, width - 40, height - 40, 24);
+    ctx.stroke();
+
+    // Header badge: DIGITAL MENU
+    const badgeText = "DIGITAL MENU";
+    ctx.font = "bold 14px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+    const badgeWidth = 140;
+    const badgeHeight = 32;
+    const badgeX = (width - badgeWidth) / 2;
+    const badgeY = 50;
+    ctx.fillStyle = "#fff4e6";
+    drawRoundRect(ctx, badgeX, badgeY, badgeWidth, badgeHeight, 16);
+    ctx.fill();
+    ctx.fillStyle = "#e8590c";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(badgeText, width / 2, badgeY + badgeHeight / 2);
+
+    // Restaurant Name
+    ctx.font = "bold 32px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+    ctx.fillStyle = "#1a1a1a";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const nameY = 120;
+    let displayName = restaurantTitle;
+    if (ctx.measureText(displayName).width > width - 80) {
+      while (ctx.measureText(displayName + "…").width > width - 80 && displayName.length > 0) {
+        displayName = displayName.slice(0, -1);
+      }
+      displayName += "…";
+    }
+    ctx.fillText(displayName, width / 2, nameY);
+
+    // Subtitle
+    ctx.font = "500 16px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+    ctx.fillStyle = "#6c757d";
+    ctx.fillText("Scan with phone camera to view menu & order", width / 2, nameY + 34);
+
+    // Draw QR canvas in the center
+    const qrSize = 420;
+    const qrX = (width - qrSize) / 2;
+    const qrY = nameY + 62;
+
+    // QR container box
+    ctx.fillStyle = "#ffffff";
+    ctx.strokeStyle = "#dee2e6";
+    ctx.lineWidth = 2;
+    drawRoundRect(ctx, qrX - 16, qrY - 16, qrSize + 32, qrSize + 32, 20);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.drawImage(canvas, qrX, qrY, qrSize, qrSize);
+
+    // Footer instruction
+    ctx.font = "bold 18px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+    ctx.fillStyle = "#e8590c";
+    ctx.fillText("Scan to Order", width / 2, qrY + qrSize + 50);
+
+    ctx.font = "13px monospace";
+    ctx.fillStyle = "#868e96";
+    let displayUrl = qrCodeUrl;
+    if (displayUrl.length > 55) {
+      displayUrl = displayUrl.slice(0, 52) + "...";
+    }
+    ctx.fillText(displayUrl, width / 2, qrY + qrSize + 76);
+
+    const centerLogoSize = 90;
+    const centerLogoX = qrX + (qrSize - centerLogoSize) / 2;
+    const centerLogoY = qrY + (qrSize - centerLogoSize) / 2;
+
+    drawCenterLogoToContext(ctx, centerLogoX, centerLogoY, centerLogoSize, () => {
+      const fileName = `${safeName}-menu-qr.png`;
+      try {
+        const pngUrl = exportCanvas.toDataURL("image/png");
+        triggerDownload(pngUrl, fileName);
+      } catch {
+        triggerDownload(canvas.toDataURL("image/png"), fileName);
+      }
+    });
   };
 
   const handlePrint = () => {
@@ -100,8 +362,6 @@ export default function SettingsPage() {
     const dataUrl = canvas.toDataURL("image/png");
     const printWindow = window.open("", "_blank");
     if (!printWindow) return;
-
-    const restaurantTitle = restaurant?.name || "Restaurant Menu";
     printWindow.document.write(`
       <!DOCTYPE html>
       <html>
@@ -265,7 +525,7 @@ export default function SettingsPage() {
           >
             {/* Left: QR Canvas Preview */}
             <Paper
-              p="md"
+              p="lg"
               radius="md"
               withBorder
               style={{
@@ -274,34 +534,128 @@ export default function SettingsPage() {
                 alignItems: "center",
                 justifyContent: "center",
                 backgroundColor: "#ffffff",
-                boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
+                boxShadow: "0 4px 14px rgba(0,0,0,0.05)",
                 borderColor: "var(--color-border)",
                 flexShrink: 0,
+                minWidth: 230,
               }}
             >
+              <Badge variant="light" color="orange" size="xs" radius="sm" mb={4}>
+                DIGITAL MENU
+              </Badge>
+              <Text
+                fw={700}
+                size="md"
+                ta="center"
+                style={{
+                  color: "#1a1a1a",
+                  maxWidth: 200,
+                  lineHeight: 1.25,
+                  marginBottom: 8,
+                  wordBreak: "break-word",
+                }}
+              >
+                {restaurantTitle}
+              </Text>
+
               <Box
                 style={{
                   padding: 8,
-                  borderRadius: 8,
+                  borderRadius: 12,
                   backgroundColor: "#ffffff",
+                  border: "1px solid #f1f3f5",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
                 }}
               >
                 {qrCodeUrl ? (
-                  <QRCodeCanvas
-                    id="restaurant-qr-canvas"
-                    value={qrCodeUrl}
-                    size={512}
-                    level="H"
-                    marginSize={2}
+                  <Box
                     style={{
+                      position: "relative",
                       width: 190,
                       height: 190,
-                      display: "block",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
                     }}
-                  />
+                  >
+                    <QRCodeCanvas
+                      id="restaurant-qr-canvas"
+                      value={qrCodeUrl}
+                      size={512}
+                      level="H"
+                      marginSize={2}
+                      imageSettings={
+                        qrCenterImageSrc
+                          ? {
+                              src: qrCenterImageSrc,
+                              height: 110,
+                              width: 110,
+                              excavate: true,
+                              crossOrigin: "anonymous",
+                            }
+                          : undefined
+                      }
+                      style={{
+                        width: 190,
+                        height: 190,
+                        display: "block",
+                      }}
+                    />
+                    {/* Visual Center Logo Overlay */}
+                    {qrCenterImageSrc && (
+                      <Box
+                        style={{
+                          position: "absolute",
+                          top: "50%",
+                          left: "50%",
+                          transform: "translate(-50%, -50%)",
+                          width: 44,
+                          height: 44,
+                          borderRadius: 10,
+                          backgroundColor: "#ffffff",
+                          padding: 3,
+                          boxShadow: "0 2px 10px rgba(0,0,0,0.18)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          overflow: "hidden",
+                          pointerEvents: "none",
+                        }}
+                      >
+                        {activeLogo ? (
+                          <img
+                            src={activeLogo}
+                            alt="Logo"
+                            style={{
+                              width: "100%",
+                              height: "100%",
+                              objectFit: "contain",
+                              borderRadius: 7,
+                            }}
+                          />
+                        ) : (
+                          <Box
+                            style={{
+                              width: "100%",
+                              height: "100%",
+                              borderRadius: 7,
+                              background: "linear-gradient(135deg, #f97316 0%, #ea580c 100%)",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              color: "#ffffff",
+                              fontWeight: 900,
+                              fontSize: 18,
+                            }}
+                          >
+                            {restaurantInitial}
+                          </Box>
+                        )}
+                      </Box>
+                    )}
+                  </Box>
                 ) : (
                   <Box
                     style={{
@@ -317,9 +671,13 @@ export default function SettingsPage() {
                   </Box>
                 )}
               </Box>
-              <Badge variant="light" color="orange" size="sm" mt="xs">
+
+              <Badge variant="light" color="orange" size="sm" mt="sm">
                 Scan to Order
               </Badge>
+              <Text size="xs" c="dimmed" mt={4} ta="center">
+                Point camera to view menu
+              </Text>
             </Paper>
 
             {/* Right: URL, Action Buttons, and Guidance */}
@@ -331,6 +689,7 @@ export default function SettingsPage() {
                 </Badge>
               </Group>
 
+
               <Group gap="sm" wrap="wrap">
                 <Button
                   leftSection={downloadedFileName ? <IconCheck size={18} /> : <IconDownload size={18} />}
@@ -339,10 +698,20 @@ export default function SettingsPage() {
                     backgroundColor: downloadedFileName ? "var(--color-success)" : "var(--color-primary)",
                     transition: "all 0.2s ease",
                   }}
-                  onClick={handleDownload}
+                  onClick={() => handleDownload(true)}
                   disabled={!qrCodeUrl}
                 >
-                  {downloadedFileName ? "Saved to Downloads!" : "Download QR Code (PNG)"}
+                  {downloadedFileName ? "Saved to Downloads!" : "Download QR Code (with Name)"}
+                </Button>
+
+                <Button
+                  variant="default"
+                  leftSection={<IconDownload size={16} />}
+                  onClick={() => handleDownload(false)}
+                  disabled={!qrCodeUrl}
+                  title="Download only the raw QR code matrix"
+                >
+                  Download QR Only
                 </Button>
 
                 <Button

@@ -159,7 +159,7 @@ function OrderSuccessContent() {
   const order = sessionData.order;
   const restaurantId = order?.restaurantId || "";
   const restaurantName = order?.restaurant?.name || "Kitchen";
-  const tableNumber = order?.table?.number || "Your Table";
+  const tableNumber = order?.tableName || order?.table?.number || "Your Table";
   const orderItems = order?.orderItems || [];
   const orderIdShort = order?.id ? order.id.slice(0, 8).toUpperCase() : (sessionData.orderId?.slice(0, 8).toUpperCase() || "CONFIRMED");
 

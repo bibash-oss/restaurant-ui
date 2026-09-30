@@ -43,10 +43,9 @@ import {
   IconBrandStripe,
 } from "@tabler/icons-react";
 import { APIGetCategoriesByRestaurant, APIGetMenuItemsByRestaurant } from "@/api/menu";
-import { APIGetTablesByRestaurant } from "@/api/tables";
 import { APICreateOrder } from "@/api/orders";
 import { APICreateCheckoutSession } from "@/api/payment";
-import { MenuItem, MenuCategory, Table as TableType, Restaurant, Addon } from "@/types";
+import { MenuItem, MenuCategory, Restaurant, Addon } from "@/types";
 
 export interface CartAddonSelection {
   addonId: string;
@@ -69,7 +68,6 @@ export default function RestaurantMenuPage() {
   // Data states
   const [categories, setCategories] = useState<MenuCategory[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
-  const [tables, setTables] = useState<TableType[]>([]);
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -80,7 +78,7 @@ export default function RestaurantMenuPage() {
 
   // Cart & Order states
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
+  const [tableName, setTableName] = useState<string>("");
   const [isPlacingOrder, setIsPlacingOrder] = useState<boolean>(false);
   const [orderSuccess, setOrderSuccess] = useState<string | null>(null);
   const [lastPlacedOrder, setLastPlacedOrder] = useState<{
@@ -95,9 +93,18 @@ export default function RestaurantMenuPage() {
   const [addonSelections, setAddonSelections] = useState<Record<string, { quantity: number; selected: boolean }>>({});
   const [addonModalOpened, { open: openAddonModal, close: closeAddonModal }] = useDisclosure(false);
 
+  // Table number prompt modal states
+  const [tableModalOpened, { open: openTableModal, close: closeTableModal }] = useDisclosure(false);
+  const [tempTableInput, setTempTableInput] = useState<string>("");
+  const [tableModalError, setTableModalError] = useState<string | null>(null);
+  const [pendingCartAction, setPendingCartAction] = useState<
+    | { type: "add"; item: MenuItem; addons?: CartAddonSelection[] }
+    | { type: "addons"; item: MenuItem }
+    | null
+  >(null);
+
   // Drawers & Modals
   const [cartOpened, { open: openCart, close: closeCart }] = useDisclosure(false);
-  const [tableModalOpened, { open: openTableModal, close: closeTableModal }] = useDisclosure(false);
 
   // Restore cart from localStorage on mount
   useEffect(() => {
@@ -131,47 +138,31 @@ export default function RestaurantMenuPage() {
     }
   }, [cart, restaurantId]);
 
-  // Load menu & table data
+  // Load menu data
   useEffect(() => {
     if (!restaurantId) return;
+
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.removeItem(`dining_table_${restaurantId}`);
+      } catch (e) {}
+    }
 
     let isMounted = true;
     setIsLoading(true);
     setError(null);
 
     Promise.allSettled([
-      APIGetTablesByRestaurant(restaurantId),
       APIGetCategoriesByRestaurant(restaurantId),
       APIGetMenuItemsByRestaurant(restaurantId),
     ])
-      .then(([tablesRes, catsRes, itemsRes]) => {
+      .then(([catsRes, itemsRes]) => {
         if (!isMounted) return;
 
         let loadedCategories: MenuCategory[] = [];
         let loadedItems: MenuItem[] = [];
-        let loadedTables: TableType[] = [];
 
-        // 1. Process Tables first
-        if (tablesRes.status === "fulfilled" && (tablesRes.value as any)?.data) {
-          loadedTables = Array.isArray((tablesRes.value as any).data)
-            ? (tablesRes.value as any).data
-            : [];
-          setTables(loadedTables);
-
-          // Check if table is stored in localStorage
-          const stored = typeof window !== "undefined"
-            ? localStorage.getItem(`dining_table_${restaurantId}`)
-            : null;
-
-          if (stored && loadedTables.some((t) => t.id === stored)) {
-            setSelectedTableId(stored);
-          } else if (loadedTables.length > 0) {
-            // Prompt customer to select their table on arrival
-            openTableModal();
-          }
-        }
-
-        // 2. Process Categories
+        // 1. Process Categories
         if (catsRes.status === "fulfilled" && (catsRes.value as any)?.data) {
           loadedCategories = Array.isArray((catsRes.value as any).data)
             ? (catsRes.value as any).data
@@ -271,6 +262,48 @@ export default function RestaurantMenuPage() {
     });
   };
 
+  // Intercept cart addition if table number is not set yet
+  const requestAddToCart = (item: MenuItem, chosenAddons: CartAddonSelection[] = []) => {
+    if (!tableName.trim()) {
+      setPendingCartAction({ type: "add", item, addons: chosenAddons });
+      setTempTableInput("");
+      setTableModalError(null);
+      openTableModal();
+      return;
+    }
+    addToCart(item, chosenAddons);
+  };
+
+  const requestOpenAddonModal = (item: MenuItem) => {
+    if (!tableName.trim()) {
+      setPendingCartAction({ type: "addons", item });
+      setTempTableInput("");
+      setTableModalError(null);
+      openTableModal();
+      return;
+    }
+    handleOpenAddonModal(item);
+  };
+
+  const handleConfirmTableModal = () => {
+    const trimmed = tempTableInput.trim();
+    if (!trimmed) {
+      setTableModalError("Please enter your table number or name");
+      return;
+    }
+    setTableName(trimmed);
+    closeTableModal();
+
+    if (pendingCartAction) {
+      if (pendingCartAction.type === "add") {
+        addToCart(pendingCartAction.item, pendingCartAction.addons || []);
+      } else if (pendingCartAction.type === "addons") {
+        handleOpenAddonModal(pendingCartAction.item);
+      }
+      setPendingCartAction(null);
+    }
+  };
+
   const removeFromCart = (cartItemId: string) => {
     setCart((prev) => {
       const existing = prev.find((ci) => ci.cartItemId === cartItemId);
@@ -312,16 +345,12 @@ export default function RestaurantMenuPage() {
     }, 0);
   }, [cart]);
 
-  const selectedTable = useMemo(() => {
-    return tables.find((t) => t.id === selectedTableId) || null;
-  }, [tables, selectedTableId]);
-
   const handlePlaceOrder = async () => {
     if (cart.length === 0) return;
 
-    if (!selectedTableId) {
-      openTableModal();
-      setOrderError("Please select your table first before placing an order.");
+    if (!tableName.trim()) {
+      openCart();
+      setOrderError("Please enter your table name or number before placing an order.");
       return;
     }
 
@@ -332,7 +361,7 @@ export default function RestaurantMenuPage() {
     try {
       const payload: any = {
         restaurantId,
-        tableId: selectedTableId,
+        tableName: tableName.trim(),
         notes: orderNotes.trim() || undefined,
         items: cart.map((ci) => {
           const itemPayload: any = {
@@ -357,10 +386,8 @@ export default function RestaurantMenuPage() {
       const checkoutUrl = checkoutData?.checkoutUrl;
 
       if (checkoutUrl) {
-        // Save restaurant ID & table ID so cancel or back navigation returns seamlessly
         if (typeof window !== "undefined") {
           localStorage.setItem("last_checkout_restaurant_id", restaurantId);
-          localStorage.setItem(`dining_table_${restaurantId}`, selectedTableId);
         }
         // Redirect customer directly to Stripe hosted checkout
         window.location.href = checkoutUrl;
@@ -410,6 +437,16 @@ export default function RestaurantMenuPage() {
                 <Badge color="green" variant="dot" size="sm">
                   Accepting Orders
                 </Badge>
+                {tableName && (
+                  <Badge
+                    color="indigo"
+                    variant="light"
+                    size="sm"
+                    leftSection={<IconArmchair size={13} />}
+                  >
+                    Table: {tableName}
+                  </Badge>
+                )}
               </Group>
 
               <Title order={2} style={{ fontWeight: 800, letterSpacing: "-0.5px" }}>
@@ -423,38 +460,6 @@ export default function RestaurantMenuPage() {
                 </Group>
               )}
 
-              {/* Table Selector / Indicator */}
-              <Group gap="xs" mt={10}>
-                {selectedTable ? (
-                  <Badge
-                    size="md"
-                    color="orange"
-                    variant="filled"
-                    style={{
-                      backgroundColor: "var(--color-primary)",
-                      cursor: "pointer",
-                      paddingLeft: 12,
-                      paddingRight: 12,
-                      height: 28,
-                    }}
-                    leftSection={<IconArmchair size={15} />}
-                    onClick={openTableModal}
-                  >
-                    Dining at: {selectedTable.number} • Tap to Change
-                  </Badge>
-                ) : (
-                  <Button
-                    size="xs"
-                    color="orange"
-                    variant="filled"
-                    style={{ backgroundColor: "var(--color-primary)" }}
-                    leftSection={<IconArmchair size={15} />}
-                    onClick={openTableModal}
-                  >
-                    Select Your Table Number
-                  </Button>
-                )}
-              </Group>
             </Box>
 
             {/* Quick Cart Button on Header (Desktop) */}
@@ -693,7 +698,7 @@ export default function RestaurantMenuPage() {
                         variant="light"
                         color="orange"
                         leftSection={<IconPlus size={16} />}
-                        onClick={() => handleOpenAddonModal(item)}
+                        onClick={() => requestOpenAddonModal(item)}
                         size="sm"
                         radius="md"
                       >
@@ -720,7 +725,7 @@ export default function RestaurantMenuPage() {
                             style={{ backgroundColor: "var(--color-primary)" }}
                             size="md"
                             radius="md"
-                            onClick={() => addToCart(item, [])}
+                            onClick={() => requestAddToCart(item, [])}
                           >
                             <IconPlus size={16} />
                           </ActionIcon>
@@ -736,7 +741,7 @@ export default function RestaurantMenuPage() {
                         variant="light"
                         color="orange"
                         leftSection={<IconPlus size={16} />}
-                        onClick={() => addToCart(item, [])}
+                        onClick={() => requestAddToCart(item, [])}
                         size="sm"
                         radius="md"
                       >
@@ -886,19 +891,18 @@ export default function RestaurantMenuPage() {
       >
         <Stack justify="space-between" style={{ minHeight: "calc(100vh - 100px)" }}>
           <Box>
-            {/* Table Selector */}
-            {tables.length > 0 && (
-              <Box mb="md">
-                <Select
-                  label="Select Your Table"
-                  placeholder="Choose your table"
-                  data={tables.map((t) => ({ value: t.id, label: t.number }))}
-                  value={selectedTableId}
-                  onChange={setSelectedTableId}
-                  size="sm"
-                />
-              </Box>
-            )}
+            {/* Table Name Input */}
+            <Box mb="md">
+              <TextInput
+                label="Table Name / Number"
+                placeholder="e.g. Table 4, Bar 2, Patio"
+                value={tableName}
+                onChange={(e) => setTableName(e.target.value)}
+                leftSection={<IconArmchair size={16} />}
+                required
+                size="sm"
+              />
+            </Box>
 
             {/* Order Feedback */}
             {orderSuccess && (
@@ -925,7 +929,7 @@ export default function RestaurantMenuPage() {
                 </Group>
 
                 <Text size="xs" c="dimmed" mb="xs">
-                  Table: <b>{lastPlacedOrder?.tableName || selectedTable?.number || "N/A"}</b> •{" "}
+                  Table: <b>{lastPlacedOrder?.tableName || tableName || "N/A"}</b> •{" "}
                   Total: <b>${(lastPlacedOrder?.totalAmount ?? 0).toFixed(2)}</b>
                 </Text>
 
@@ -1106,56 +1110,7 @@ export default function RestaurantMenuPage() {
         </Stack>
       </Drawer>
 
-      {/* Table Selection Modal on Arrival or Change */}
-      <Modal
-        opened={tableModalOpened}
-        onClose={closeTableModal}
-        title={
-          <Group gap="xs">
-            <IconArmchair size={22} style={{ color: "var(--color-primary)" }} />
-            <Text fw={700} size="lg">
-              Select Your Table
-            </Text>
-          </Group>
-        }
-        centered
-        radius="md"
-      >
-        <Text size="sm" c="dimmed" mb="lg">
-          Please choose your table number so the kitchen knows where to serve your order:
-        </Text>
 
-        {tables.length === 0 ? (
-          <Text size="sm" c="dimmed" ta="center" py="md">
-            No tables registered for this restaurant yet.
-          </Text>
-        ) : (
-          <SimpleGrid cols={2} spacing="md">
-            {tables.map((table) => {
-              const isSelected = selectedTableId === table.id;
-              return (
-                <Button
-                  key={table.id}
-                  variant={isSelected ? "filled" : "outline"}
-                  color="orange"
-                  style={isSelected ? { backgroundColor: "var(--color-primary)" } : {}}
-                  size="md"
-                  leftSection={<IconArmchair size={18} />}
-                  onClick={() => {
-                    setSelectedTableId(table.id);
-                    if (typeof window !== "undefined") {
-                      localStorage.setItem(`dining_table_${restaurantId}`, table.id);
-                    }
-                    closeTableModal();
-                  }}
-                >
-                  {table.number}
-                </Button>
-              );
-            })}
-          </SimpleGrid>
-        )}
-      </Modal>
 
       {/* Addon Customization Modal */}
       <Modal
@@ -1324,6 +1279,90 @@ export default function RestaurantMenuPage() {
             })()}
           </Stack>
         )}
+      </Modal>
+
+      {/* Table Number Prompt Modal */}
+      <Modal
+        opened={tableModalOpened}
+        onClose={() => {
+          closeTableModal();
+          setPendingCartAction(null);
+        }}
+        title={
+          <Group gap="xs">
+            <Box
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: "8px",
+                backgroundColor: "var(--color-primary-light)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "var(--color-primary)",
+              }}
+            >
+              <IconArmchair size={20} />
+            </Box>
+            <Box>
+              <Title order={4} style={{ color: "var(--color-text)", lineHeight: 1.2 }}>
+                Where are you seated?
+              </Title>
+              <Text size="xs" style={{ color: "var(--color-text-muted)" }}>
+                Table Number / Seating Name
+              </Text>
+            </Box>
+          </Group>
+        }
+        centered
+        radius="md"
+      >
+        <Stack gap="md" pt="xs">
+          <Text size="sm" c="dimmed">
+            Please enter your table or seat number so our kitchen staff knows where to deliver your food.
+          </Text>
+
+          <TextInput
+            data-autofocus
+            label="Table Name / Number"
+            placeholder="e.g. Table 4, Bar 2, Patio"
+            value={tempTableInput}
+            onChange={(e) => {
+              setTempTableInput(e.currentTarget.value);
+              if (tableModalError) setTableModalError(null);
+            }}
+            error={tableModalError}
+            leftSection={<IconArmchair size={16} />}
+            required
+            size="md"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                handleConfirmTableModal();
+              }
+            }}
+          />
+
+          <Group justify="flex-end" gap="sm" mt="sm">
+            <Button
+              variant="subtle"
+              color="gray"
+              onClick={() => {
+                closeTableModal();
+                setPendingCartAction(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              color="orange"
+              style={{ backgroundColor: "var(--color-primary)" }}
+              onClick={handleConfirmTableModal}
+            >
+              Continue to Order
+            </Button>
+          </Group>
+        </Stack>
       </Modal>
     </Box>
   );

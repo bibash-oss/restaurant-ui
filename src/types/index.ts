@@ -14,6 +14,8 @@ export interface Restaurant {
   createdAt?: string;
   updatedAt?: string;
   qrUrl?: string;
+  imgUrl?: string;
+  image?: string;
 }
 
 export interface User {
@@ -28,17 +30,10 @@ export interface User {
   createdAt?: string;
   updatedAt?: string;
   qrUrl?: string;
+  imgUrl?: string;
+  image?: string;
 }
 
-export interface Table {
-  id: string;
-  restaurantId: string;
-  number: string;
-  menuType?: "BAR" | "KITCHEN";
-  isActive?: boolean;
-  createdAt?: string;
-  updatedAt?: string;
-}
 
 export interface MenuCategory {
   id: string;
@@ -110,8 +105,7 @@ export interface OrderItem {
 export interface Order {
   id: string;
   restaurantId: string;
-  tableId: string;
-  table?: Table;
+  tableName: string;
   status: OrderStatus;
   totalAmount?: number;
   notes?: string;
